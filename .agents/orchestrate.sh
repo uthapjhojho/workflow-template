@@ -1844,7 +1844,7 @@ case "${1:-status}" in
     ;;
   status)
     # Check workflow type
-    local workflow_type=$(get_state '.type // "feature"')
+    workflow_type=$(get_state '.type // "feature"')
     if [ "$workflow_type" == "bugfix" ]; then
       show_bugfix_status
     else
@@ -1853,7 +1853,7 @@ case "${1:-status}" in
     ;;
   resume)
     # Check workflow type and route accordingly
-    local workflow_type=$(get_state '.type // "feature"')
+    workflow_type=$(get_state '.type // "feature"')
     if [ "$workflow_type" == "bugfix" ]; then
       resume_bugfix
     else
