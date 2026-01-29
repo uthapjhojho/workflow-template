@@ -42,6 +42,219 @@ log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 log_phase() { echo -e "\n${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"; echo -e "${CYAN}  $1${NC}"; echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n"; }
 log_decision() { echo -e "${MAGENTA}[DECISION]${NC} $1"; }
 
+# ============================================================================
+# PRE-FLIGHT CHECK FUNCTIONS
+# ============================================================================
+
+# Check if a command exists
+command_exists() {
+  command -v "$1" &> /dev/null
+}
+
+# Run all pre-flight checks
+# Returns 0 if all pass, 1 if any fail
+# Set PREFLIGHT_STRICT=1 to fail on warnings too
+run_preflight_checks() {
+  local strict="${PREFLIGHT_STRICT:-0}"
+  local errors=0
+  local warnings=0
+
+  log_phase "PRE-FLIGHT CHECKS"
+
+  # 1. Check required tools
+  echo "Checking required tools..."
+
+  if command_exists git; then
+    echo -e "  ${GREEN}✓${NC} git"
+  else
+    echo -e "  ${RED}✗${NC} git - Required for version control"
+    ((errors++))
+  fi
+
+  if command_exists jq; then
+    echo -e "  ${GREEN}✓${NC} jq"
+  else
+    echo -e "  ${RED}✗${NC} jq - Required for JSON parsing"
+    echo "    Install: brew install jq (macOS) or apt install jq (Linux)"
+    ((errors++))
+  fi
+
+  if command_exists gh; then
+    echo -e "  ${GREEN}✓${NC} gh (GitHub CLI)"
+  else
+    echo -e "  ${YELLOW}⚠${NC} gh (GitHub CLI) - Required for bug-fix workflow"
+    echo "    Install: brew install gh (macOS) or https://cli.github.com"
+    ((warnings++))
+  fi
+
+  echo ""
+
+  # 2. Check if in a git repository
+  echo "Checking git repository..."
+
+  if git rev-parse --git-dir > /dev/null 2>&1; then
+    echo -e "  ${GREEN}✓${NC} Inside git repository"
+
+    # 3. Check for uncommitted changes
+    if git diff --quiet && git diff --staged --quiet; then
+      echo -e "  ${GREEN}✓${NC} Working directory clean"
+    else
+      local changed_files=$(git status --short | wc -l | tr -d ' ')
+      echo -e "  ${YELLOW}⚠${NC} Uncommitted changes ($changed_files files)"
+      echo "    Consider committing or stashing before starting workflow"
+      ((warnings++))
+    fi
+
+    # 4. Check current branch
+    local current_branch=$(git branch --show-current 2>/dev/null || echo "detached")
+    local default_branch=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@' || echo "main")
+
+    if [ "$current_branch" == "$default_branch" ] || [ "$current_branch" == "main" ] || [ "$current_branch" == "master" ]; then
+      echo -e "  ${GREEN}✓${NC} On base branch: $current_branch"
+    else
+      echo -e "  ${YELLOW}⚠${NC} Not on base branch (current: $current_branch)"
+      echo "    Consider switching to $default_branch before starting"
+      ((warnings++))
+    fi
+
+    # 5. Check if remote is configured
+    if git remote get-url origin > /dev/null 2>&1; then
+      local remote_url=$(git remote get-url origin)
+      echo -e "  ${GREEN}✓${NC} Remote configured: $remote_url"
+    else
+      echo -e "  ${YELLOW}⚠${NC} No remote 'origin' configured"
+      ((warnings++))
+    fi
+
+  else
+    echo -e "  ${RED}✗${NC} Not inside a git repository"
+    echo "    Run: git init"
+    ((errors++))
+  fi
+
+  echo ""
+
+  # 6. Check GitHub CLI authentication (if gh is available)
+  if command_exists gh; then
+    echo "Checking GitHub CLI..."
+
+    if gh auth status > /dev/null 2>&1; then
+      local gh_user=$(gh api user --jq '.login' 2>/dev/null || echo "unknown")
+      echo -e "  ${GREEN}✓${NC} Authenticated as: $gh_user"
+    else
+      echo -e "  ${YELLOW}⚠${NC} GitHub CLI not authenticated"
+      echo "    Run: gh auth login"
+      ((warnings++))
+    fi
+    echo ""
+  fi
+
+  # 7. Check state file
+  echo "Checking orchestration state..."
+
+  if [ -f "$STATE_FILE" ]; then
+    local current_phase=$(jq -r '.phase // "unknown"' "$STATE_FILE" 2>/dev/null)
+    if [ "$current_phase" == "idle" ]; then
+      echo -e "  ${GREEN}✓${NC} State: idle (ready for new workflow)"
+    else
+      echo -e "  ${YELLOW}⚠${NC} Workflow in progress (phase: $current_phase)"
+      echo "    Run: ./orchestrate.sh reset to clear"
+      ((warnings++))
+    fi
+  else
+    echo -e "  ${YELLOW}⚠${NC} State file not found (will be created)"
+    ((warnings++))
+  fi
+
+  echo ""
+
+  # Summary
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+  if [ "$errors" -gt 0 ]; then
+    echo -e "${RED}Pre-flight failed: $errors error(s), $warnings warning(s)${NC}"
+    echo ""
+    echo "Fix the errors above before proceeding."
+    return 1
+  elif [ "$warnings" -gt 0 ]; then
+    echo -e "${YELLOW}Pre-flight passed with $warnings warning(s)${NC}"
+    if [ "$strict" -eq 1 ]; then
+      echo ""
+      echo "Strict mode enabled. Fix warnings before proceeding."
+      return 1
+    fi
+    return 0
+  else
+    echo -e "${GREEN}Pre-flight passed: All checks OK${NC}"
+    return 0
+  fi
+}
+
+# Quick pre-flight for start/bug commands (non-blocking warnings)
+quick_preflight() {
+  local errors=0
+
+  # Must have git
+  if ! command_exists git; then
+    log_error "git not found. Please install git."
+    return 1
+  fi
+
+  # Must have jq
+  if ! command_exists jq; then
+    log_error "jq not found. Install: brew install jq (macOS) or apt install jq (Linux)"
+    return 1
+  fi
+
+  # Must be in a git repo
+  if ! git rev-parse --git-dir > /dev/null 2>&1; then
+    log_error "Not in a git repository. Run: git init"
+    return 1
+  fi
+
+  # Check for existing workflow
+  if [ -f "$STATE_FILE" ]; then
+    local current_phase=$(jq -r '.phase // "idle"' "$STATE_FILE" 2>/dev/null)
+    if [ "$current_phase" != "idle" ] && [ "$current_phase" != "null" ]; then
+      log_error "Workflow already in progress (phase: $current_phase)"
+      log_info "Run: ./orchestrate.sh reset to clear"
+      return 1
+    fi
+  fi
+
+  # Warn about uncommitted changes (non-blocking)
+  if ! git diff --quiet || ! git diff --staged --quiet; then
+    local changed_files=$(git status --short | wc -l | tr -d ' ')
+    log_warn "You have $changed_files uncommitted file(s). Consider committing first."
+  fi
+
+  return 0
+}
+
+# Bug-fix specific pre-flight (requires gh)
+bugfix_preflight() {
+  # Run quick preflight first
+  if ! quick_preflight; then
+    return 1
+  fi
+
+  # Must have gh for bug-fix workflow
+  if ! command_exists gh; then
+    log_error "GitHub CLI (gh) not found. Required for bug-fix workflow."
+    echo "Install: brew install gh (macOS) or https://cli.github.com"
+    return 1
+  fi
+
+  # Must be authenticated
+  if ! gh auth status > /dev/null 2>&1; then
+    log_error "GitHub CLI not authenticated."
+    echo "Run: gh auth login"
+    return 1
+  fi
+
+  return 0
+}
+
 # Model selection based on phase and complexity
 # Usage: get_model_for_phase <phase> [complexity]
 # Complexity: simple | medium | complex (default: medium)
@@ -291,13 +504,6 @@ start_bugfix() {
     exit 1
   fi
 
-  local current_phase=$(get_state '.phase')
-  if [ "$current_phase" != "idle" ] && [ "$current_phase" != "null" ]; then
-    log_error "Cannot start bug-fix. Current phase: $current_phase"
-    log_info "Use './orchestrate.sh reset' to clear current state"
-    exit 1
-  fi
-
   # Validate severity
   case "$severity" in
     critical|major|minor) ;;
@@ -308,18 +514,12 @@ start_bugfix() {
       ;;
   esac
 
+  # Run pre-flight checks (includes gh auth check)
+  if ! bugfix_preflight; then
+    exit 1
+  fi
+
   log_phase "STARTING BUG-FIX WORKFLOW"
-
-  # Check GitHub CLI
-  if ! command -v gh &> /dev/null; then
-    log_error "GitHub CLI (gh) not found. Install from: https://cli.github.com"
-    exit 1
-  fi
-
-  if ! gh auth status &> /dev/null; then
-    log_error "GitHub CLI not authenticated. Run: gh auth login"
-    exit 1
-  fi
 
   # Create GitHub issue
   log_info "Creating GitHub issue..."
@@ -1106,16 +1306,14 @@ show_status() {
 # Start new feature
 start_feature() {
   local feature_name="$1"
-  
+
   if [ -z "$feature_name" ]; then
     log_error "Usage: ./orchestrate.sh start <feature-name>"
     exit 1
   fi
-  
-  local current_phase=$(get_state '.phase')
-  if [ "$current_phase" != "idle" ] && [ "$current_phase" != "null" ]; then
-    log_error "Cannot start new feature. Current phase: $current_phase"
-    log_info "Use './orchestrate.sh reset' to clear current state"
+
+  # Run pre-flight checks
+  if ! quick_preflight; then
     exit 1
   fi
   
@@ -1827,6 +2025,9 @@ next_phase() {
 
 # Main command router
 case "${1:-status}" in
+  preflight)
+    run_preflight_checks
+    ;;
   start)
     start_feature "$2"
     ;;
@@ -1949,6 +2150,7 @@ case "${1:-status}" in
     echo "  reset                Reset to idle state"
     echo ""
     echo "Utilities:"
+    echo "  preflight            Run pre-flight checks (git, tools, auth)"
     echo "  budget               Show context token budget estimate"
     echo "  model <phase> [complexity]  Get recommended model for phase"
     ;;
