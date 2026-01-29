@@ -66,6 +66,25 @@ created             (auto-links)
 | `claude-complete` | Mark Claude work done |
 | `reset` | Clear state for new workflow |
 
+### Workflow Control
+| Command | Description |
+|---------|-------------|
+| `abort` | Soft stop - pause workflow (can resume later) |
+| `rollback` | Hard reset - discard changes, delete branches |
+| `preflight` | Run pre-flight checks (git, tools, auth) |
+
+### Autonomous Mode
+| Command | Description |
+|---------|-------------|
+| `autonomous enable [timeout]` | Enable auto-approval (e.g., `enable 4h`) |
+| `autonomous disable` | Return to manual approval mode |
+| `autonomous extend <duration>` | Add time to timeout (e.g., `extend 2h`) |
+| `autonomous status` | Check autonomous mode state |
+
+**Timeout formats:** `4h`, `30m`, `2h30m`, `8h`, `1d`
+
+**Safety gates:** Research (feature) or Triage (bug-fix) ALWAYS requires human approval.
+
 ## Directory Structure
 
 ```

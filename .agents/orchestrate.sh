@@ -1002,10 +1002,133 @@ start_verify_phase() {
 # AUTONOMOUS MODE FUNCTIONS
 # ============================================================================
 
-# Check if autonomous mode is enabled
+# Parse duration string (e.g., "4h", "30m", "2h30m", "1d") to seconds
+# Works with both bash and zsh
+parse_duration() {
+  local duration="$1"
+  local seconds=0
+
+  # Extract and process days (look for digits followed by 'd')
+  local days=$(echo "$duration" | grep -oE '[0-9]+d' | grep -oE '[0-9]+' | head -1)
+  if [ -n "$days" ]; then
+    seconds=$((seconds + days * 86400))
+  fi
+
+  # Extract and process hours (look for digits followed by 'h')
+  local hours=$(echo "$duration" | grep -oE '[0-9]+h' | grep -oE '[0-9]+' | head -1)
+  if [ -n "$hours" ]; then
+    seconds=$((seconds + hours * 3600))
+  fi
+
+  # Extract and process minutes (look for digits followed by 'm', but not 'min')
+  local minutes=$(echo "$duration" | grep -oE '[0-9]+m' | grep -oE '[0-9]+' | head -1)
+  if [ -n "$minutes" ]; then
+    seconds=$((seconds + minutes * 60))
+  fi
+
+  # Handle raw number (assume hours for convenience)
+  if echo "$duration" | grep -qE '^[0-9]+$'; then
+    seconds=$((seconds + duration * 3600))
+  fi
+
+  echo "$seconds"
+}
+
+# Format seconds as human-readable duration
+format_duration() {
+  local seconds="$1"
+  local hours=$((seconds / 3600))
+  local minutes=$(((seconds % 3600) / 60))
+
+  if [ "$hours" -gt 0 ] && [ "$minutes" -gt 0 ]; then
+    echo "${hours}h ${minutes}m"
+  elif [ "$hours" -gt 0 ]; then
+    echo "${hours}h"
+  elif [ "$minutes" -gt 0 ]; then
+    echo "${minutes}m"
+  else
+    echo "${seconds}s"
+  fi
+}
+
+# Convert ISO8601 UTC timestamp to epoch seconds (portable)
+iso_to_epoch() {
+  local iso="$1"
+  # Remove trailing Z and parse as UTC
+  local clean="${iso%Z}"
+
+  # Try macOS date format first, then GNU date
+  if date -j -u -f "%Y-%m-%dT%H:%M:%S" "$clean" "+%s" 2>/dev/null; then
+    return
+  elif date -u -d "$clean" "+%s" 2>/dev/null; then
+    return
+  else
+    echo "0"
+  fi
+}
+
+# Check if autonomous mode timeout has expired
+is_autonomous_expired() {
+  local expires_at=$(get_state '.autonomous.expires_at // null')
+
+  if [ "$expires_at" == "null" ] || [ -z "$expires_at" ]; then
+    # No timeout set - not expired
+    return 1
+  fi
+
+  # Convert expires_at to epoch seconds
+  local expires_epoch
+  expires_epoch=$(iso_to_epoch "$expires_at")
+
+  local now_epoch=$(date "+%s")
+
+  if [ "$now_epoch" -ge "$expires_epoch" ]; then
+    return 0  # Expired
+  else
+    return 1  # Not expired
+  fi
+}
+
+# Get remaining time in seconds (0 if expired or no timeout)
+get_remaining_seconds() {
+  local expires_at=$(get_state '.autonomous.expires_at // null')
+
+  if [ "$expires_at" == "null" ] || [ -z "$expires_at" ]; then
+    echo "-1"  # No timeout set
+    return
+  fi
+
+  local expires_epoch
+  expires_epoch=$(iso_to_epoch "$expires_at")
+
+  local now_epoch=$(date "+%s")
+  local remaining=$((expires_epoch - now_epoch))
+
+  if [ "$remaining" -lt 0 ]; then
+    echo "0"
+  else
+    echo "$remaining"
+  fi
+}
+
+# Check if autonomous mode is enabled (and not expired)
 is_autonomous_enabled() {
   local enabled=$(get_state '.autonomous.enabled // false')
-  [ "$enabled" == "true" ]
+
+  if [ "$enabled" != "true" ]; then
+    return 1
+  fi
+
+  # Check if timeout has expired
+  if is_autonomous_expired; then
+    # Auto-disable on timeout
+    log_warn "Autonomous mode timeout expired - auto-disabling"
+    set_state '.autonomous.enabled' 'false'
+    add_history "Autonomous mode auto-disabled (timeout expired)"
+    return 1
+  fi
+
+  return 0
 }
 
 # Check if a checkpoint should be auto-approved (autonomous mode)
@@ -1032,21 +1155,37 @@ check_autonomous_approval() {
   return 1
 }
 
-# Manage autonomous mode (enable/disable/status)
+# Manage autonomous mode (enable/disable/status/extend)
 autonomous_mode() {
   local action="${1:-status}"
+  local param="$2"
 
   case "$action" in
     enable)
       # Safety gate: require research approval first
       local research_approved=$(get_state '.phases.research.approved // false')
-      if [ "$research_approved" != "true" ]; then
-        log_error "Cannot enable autonomous mode before research is approved"
-        log_info "First run: ./orchestrate.sh approve research"
-        echo ""
-        echo "Safety gate: Research phase must be human-approved to prevent"
-        echo "runaway development on invalid features."
-        return 1
+      local triage_approved=$(get_state '.phases.triage.approved // false')
+      local workflow_type=$(get_state '.type // "feature"')
+
+      # For bug-fix workflow, check triage instead of research
+      if [ "$workflow_type" == "bugfix" ]; then
+        if [ "$triage_approved" != "true" ]; then
+          log_error "Cannot enable autonomous mode before triage is approved"
+          log_info "First run: ./orchestrate.sh approve triage"
+          echo ""
+          echo "Safety gate: Triage phase must be human-approved to prevent"
+          echo "runaway fixes on misunderstood bugs."
+          return 1
+        fi
+      else
+        if [ "$research_approved" != "true" ]; then
+          log_error "Cannot enable autonomous mode before research is approved"
+          log_info "First run: ./orchestrate.sh approve research"
+          echo ""
+          echo "Safety gate: Research phase must be human-approved to prevent"
+          echo "runaway development on invalid features."
+          return 1
+        fi
       fi
 
       # Check if already enabled
@@ -1056,47 +1195,147 @@ autonomous_mode() {
         return 0
       fi
 
+      # Parse optional timeout duration
+      local timeout_seconds=0
+      local expires_at="null"
+      local timeout_display="unlimited"
+
+      if [ -n "$param" ]; then
+        timeout_seconds=$(parse_duration "$param")
+        if [ "$timeout_seconds" -gt 0 ]; then
+          local now_epoch=$(date "+%s")
+          local expires_epoch=$((now_epoch + timeout_seconds))
+          # Use portable date format
+          expires_at=$(date -u -r "$expires_epoch" +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || \
+                       date -u -d "@$expires_epoch" +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null)
+          timeout_display=$(format_duration "$timeout_seconds")
+        else
+          log_error "Invalid timeout format: $param"
+          echo "Examples: 4h, 30m, 2h30m, 8h, 1d"
+          return 1
+        fi
+      fi
+
       # Enable autonomous mode
       local timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
       set_state '.autonomous.enabled' 'true'
       set_state '.autonomous.enabled_at' "\"$timestamp\""
       set_state '.autonomous.enabled_by' '"user"'
       set_state '.autonomous.auto_approved' '[]'
-      add_history "Autonomous mode enabled"
+
+      if [ "$expires_at" != "null" ]; then
+        set_state '.autonomous.timeout_hours' "$((timeout_seconds / 3600))"
+        set_state '.autonomous.expires_at' "\"$expires_at\""
+        add_history "Autonomous mode enabled (timeout: $timeout_display)"
+      else
+        set_state '.autonomous.timeout_hours' 'null'
+        set_state '.autonomous.expires_at' 'null'
+        add_history "Autonomous mode enabled (no timeout)"
+      fi
 
       log_success "Autonomous mode ENABLED"
       echo ""
+      if [ "$timeout_display" != "unlimited" ]; then
+        echo -e "Timeout:      ${YELLOW}$timeout_display${NC}"
+        echo "Expires at:   $expires_at"
+        echo ""
+      else
+        echo -e "Timeout:      ${YELLOW}unlimited${NC} (use './orchestrate.sh autonomous enable 4h' to set)"
+        echo ""
+      fi
       echo "What will be auto-approved:"
       echo "  - Plan checkpoint"
       echo "  - Review checkpoint"
       echo "  - Integration checkpoint"
       echo ""
       echo "What still requires human approval:"
-      echo "  - Research checkpoint (ALWAYS requires human - safety gate)"
+      if [ "$workflow_type" == "bugfix" ]; then
+        echo "  - Triage checkpoint (ALWAYS requires human - safety gate)"
+      else
+        echo "  - Research checkpoint (ALWAYS requires human - safety gate)"
+      fi
       echo ""
       echo "To disable: ./orchestrate.sh autonomous disable"
+      echo "To extend:  ./orchestrate.sh autonomous extend 2h"
       echo ""
-      log_warn "Claude will now work autonomously until disabled"
+      log_warn "Claude will now work autonomously until timeout or disabled"
       ;;
     disable)
-      if ! is_autonomous_enabled; then
+      local enabled=$(get_state '.autonomous.enabled // false')
+      if [ "$enabled" != "true" ]; then
         log_warn "Autonomous mode is already disabled"
         return 0
       fi
 
       set_state '.autonomous.enabled' 'false'
+      set_state '.autonomous.expires_at' 'null'
       add_history "Autonomous mode disabled"
 
       log_success "Autonomous mode DISABLED"
       echo "All checkpoints now require human approval"
       ;;
+    extend)
+      local enabled=$(get_state '.autonomous.enabled // false')
+      if [ "$enabled" != "true" ]; then
+        log_error "Autonomous mode is not enabled. Enable it first."
+        return 1
+      fi
+
+      if [ -z "$param" ]; then
+        log_error "Usage: ./orchestrate.sh autonomous extend <duration>"
+        echo "Examples: 2h, 30m, 4h"
+        return 1
+      fi
+
+      local extend_seconds=$(parse_duration "$param")
+      if [ "$extend_seconds" -le 0 ]; then
+        log_error "Invalid duration: $param"
+        return 1
+      fi
+
+      # Get current expiry or use now
+      local current_expires=$(get_state '.autonomous.expires_at // null')
+      local base_epoch
+
+      if [ "$current_expires" == "null" ] || [ -z "$current_expires" ]; then
+        # No current timeout - extend from now
+        base_epoch=$(date "+%s")
+      else
+        # Extend from current expiry using portable iso_to_epoch
+        base_epoch=$(iso_to_epoch "$current_expires")
+        # If expired, extend from now instead
+        local now_epoch=$(date "+%s")
+        if [ "$base_epoch" -lt "$now_epoch" ]; then
+          base_epoch="$now_epoch"
+        fi
+      fi
+
+      local new_expires_epoch=$((base_epoch + extend_seconds))
+      local new_expires=$(date -u -r "$new_expires_epoch" +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || \
+                          date -u -d "@$new_expires_epoch" +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null)
+
+      set_state '.autonomous.expires_at' "\"$new_expires\""
+      add_history "Autonomous mode extended by $(format_duration $extend_seconds)"
+
+      local remaining=$(get_remaining_seconds)
+      log_success "Timeout extended by $(format_duration $extend_seconds)"
+      echo "New expiry: $new_expires"
+      echo "Remaining:  $(format_duration $remaining)"
+      ;;
     status)
       local enabled=$(get_state '.autonomous.enabled // false')
       local enabled_at=$(get_state '.autonomous.enabled_at // "never"')
       local enabled_by=$(get_state '.autonomous.enabled_by // "n/a"')
+      local expires_at=$(get_state '.autonomous.expires_at // null')
       local auto_approved=$(get_state '.autonomous.auto_approved // []')
 
       log_phase "AUTONOMOUS MODE STATUS"
+
+      # Check if expired (this will auto-disable if expired)
+      if [ "$enabled" == "true" ]; then
+        is_autonomous_enabled > /dev/null  # Trigger expiry check
+        enabled=$(get_state '.autonomous.enabled // false')  # Re-read after check
+      fi
 
       if [ "$enabled" == "true" ]; then
         echo -e "Status:       ${GREEN}ENABLED${NC}"
@@ -1105,6 +1344,21 @@ autonomous_mode() {
       fi
       echo "Enabled At:   $enabled_at"
       echo "Enabled By:   $enabled_by"
+
+      # Show timeout info
+      if [ "$enabled" == "true" ]; then
+        if [ "$expires_at" != "null" ] && [ -n "$expires_at" ]; then
+          local remaining=$(get_remaining_seconds)
+          if [ "$remaining" -gt 0 ]; then
+            echo -e "Timeout:      $(format_duration $remaining) remaining"
+            echo "Expires:      $expires_at"
+          else
+            echo -e "Timeout:      ${RED}EXPIRED${NC}"
+          fi
+        else
+          echo "Timeout:      unlimited"
+        fi
+      fi
       echo ""
 
       echo "Auto-approved checkpoints this session:"
@@ -1118,7 +1372,12 @@ autonomous_mode() {
       echo ""
 
       echo "Checkpoint approval rules:"
-      echo "  Research:    ALWAYS requires human approval"
+      local workflow_type=$(get_state '.type // "feature"')
+      if [ "$workflow_type" == "bugfix" ]; then
+        echo "  Triage:      ALWAYS requires human approval"
+      else
+        echo "  Research:    ALWAYS requires human approval"
+      fi
       if [ "$enabled" == "true" ]; then
         echo "  Plan:        Will be auto-approved"
         echo "  Review:      Will be auto-approved"
@@ -1131,7 +1390,13 @@ autonomous_mode() {
       ;;
     *)
       log_error "Unknown autonomous action: $action"
-      echo "Usage: ./orchestrate.sh autonomous <enable|disable|status>"
+      echo "Usage: ./orchestrate.sh autonomous <enable|disable|extend|status> [duration]"
+      echo ""
+      echo "Commands:"
+      echo "  enable [timeout]   Enable autonomous mode (optional timeout: 4h, 2h30m, 8h)"
+      echo "  disable            Disable autonomous mode"
+      echo "  extend <duration>  Extend timeout (e.g., 2h, 30m)"
+      echo "  status             Show current status"
       return 1
       ;;
   esac
@@ -1931,6 +2196,8 @@ reset_state_silent() {
     "enabled": false,
     "enabled_at": null,
     "enabled_by": null,
+    "timeout_hours": null,
+    "expires_at": null,
     "auto_approved": []
   },
   "model_hint": {
@@ -2215,7 +2482,7 @@ case "${1:-status}" in
     fi
     ;;
   autonomous)
-    autonomous_mode "$2"
+    autonomous_mode "$2" "$3"
     ;;
   claude-codex-auto)
     claude_codex_auto "$2"
@@ -2274,9 +2541,10 @@ case "${1:-status}" in
     echo "  bug-complete         Complete bug-fix (after PR created)"
     echo ""
     echo "Autonomous mode (overnight unattended work):"
-    echo "  autonomous enable    Enable auto-approval (requires research/triage approved)"
-    echo "  autonomous disable   Return to manual approval mode"
-    echo "  autonomous status    Check autonomous mode state"
+    echo "  autonomous enable [timeout]  Enable auto-approval (e.g., enable 4h, enable 8h)"
+    echo "  autonomous disable           Return to manual approval mode"
+    echo "  autonomous extend <duration> Add time to timeout (e.g., extend 2h)"
+    echo "  autonomous status            Check autonomous mode state"
     echo ""
     echo "Claude-Codex auto-orchestration:"
     echo "  claude-codex-auto           Launch Codex in background, return immediately"

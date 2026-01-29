@@ -16,12 +16,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - PR auto-linking with `Fixes #<issue>` syntax
 - Codex task templates for bug fixes (regression tests, similar fixes, docs)
 - Bug-fix specific prompts: triage.md, bugfix-planner.md, verify.md
+- Pre-flight checks command (`./orchestrate.sh preflight`)
+- Abort command for soft stop (`./orchestrate.sh abort`)
+- Rollback command for hard reset (`./orchestrate.sh rollback`)
+- Autonomous mode timeout support (`./orchestrate.sh autonomous enable 4h`)
+- Timeout extend command (`./orchestrate.sh autonomous extend 2h`)
+- Duration parsing for timeouts (4h, 30m, 2h30m, 1d formats)
 
 ### Changed
 - State.json now includes `type` field (feature/bugfix)
 - State.json includes `bug` object for bug-fix metadata
+- State.json includes `timeout_hours` and `expires_at` in autonomous object
 - Resume command auto-detects workflow type
 - Codex task cleanup now handles bugfix-*.md files
+- Autonomous mode auto-disables when timeout expires
+- Help text updated with new commands and options
 
 ---
 
