@@ -2019,14 +2019,6 @@ approve_checkpoint() {
       approve_triage
       return
       ;;
-    plan)
-      # Check workflow type and route accordingly
-      if [ "$workflow_type" == "bugfix" ]; then
-        approve_bugfix_plan
-        return
-      fi
-      # Fall through to feature plan approval below
-      ;;
     research)
       local feature=$(get_state '.feature')
       local branch_name=$(get_state '.branch.main')
@@ -2053,7 +2045,13 @@ approve_checkpoint() {
       echo "  3. Then run './orchestrate.sh next'"
       ;;
     plan)
-      # Validate Codex tasks exist before approving
+      # Check workflow type and route accordingly
+      if [ "$workflow_type" == "bugfix" ]; then
+        approve_bugfix_plan
+        return
+      fi
+
+      # Feature workflow: Validate Codex tasks exist before approving
       local feature=$(get_state '.feature')
       local codex_task_count=$(find "$CODEX_TASKS_DIR" -maxdepth 1 -name "task-*.md" 2>/dev/null | wc -l | tr -d ' ')
 
