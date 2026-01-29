@@ -1,0 +1,41 @@
+# Workflow Template - Gitignore
+# This file excludes runtime/session data while keeping reusable tooling
+
+# ===== Agent Orchestration =====
+# Session state (resets each feature)
+.agents/state.json
+
+# Phase outputs (generated per feature)
+.agents/outputs/*.md
+!.agents/outputs/.gitkeep
+
+# Active Codex tasks (generated per feature)
+.agents/codex-tasks/task-*.md
+.agents/codex-tasks/archive/
+
+# Runtime files
+.agents/*.log
+.agents/*.pid
+
+# ===== Planning Documents =====
+# Active plans (work in progress)
+docs/plans/active/*.md
+!docs/plans/active/.gitkeep
+
+# Archives (optional - uncomment to track)
+# docs/plans/archive/*.md
+# !docs/plans/archive/.gitkeep
+
+# ===== Claude Code Settings =====
+.claude/settings.local.json
+
+# ===== OS Files =====
+.DS_Store
+Thumbs.db
+
+# ===== Editor =====
+.idea/
+.vscode/
+*.swp
+*.swo
+*~

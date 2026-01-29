@@ -1,0 +1,29 @@
+{
+  "feature": null,
+  "branch": {
+    "main": null,
+    "codex": null
+  },
+  "phase": "idle",
+  "phases": {
+    "research": { "status": "pending", "output": null, "approved": false },
+    "architect": { "status": "pending", "output": null },
+    "planner": { "status": "pending", "output": null, "approved": false },
+    "execution": {
+      "status": "pending",
+      "claude": { "status": "pending", "current_task": null },
+      "codex": { "status": "pending", "tasks_completed": 0, "tasks_total": 0 }
+    },
+    "reviewer": { "status": "pending", "output": null, "approved": false },
+    "integrator": { "status": "pending", "notion_updated": false, "merged": false }
+  },
+  "tasks": {},
+  "checkpoints": {
+    "research_approved": false,
+    "plan_approved": false,
+    "execution_complete": false,
+    "review_approved": false,
+    "integration_complete": false
+  },
+  "history": []
+}
