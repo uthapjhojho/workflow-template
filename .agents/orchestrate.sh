@@ -255,6 +255,145 @@ bugfix_preflight() {
   return 0
 }
 
+# ============================================================================
+# ABORT / ROLLBACK FUNCTIONS
+# ============================================================================
+
+# Soft abort - saves current state and marks workflow as aborted
+# User can resume later or rollback
+abort_workflow() {
+  local phase=$(get_state '.phase')
+
+  if [ "$phase" == "idle" ]; then
+    log_warn "No active workflow to abort"
+    return 0
+  fi
+
+  log_phase "ABORTING WORKFLOW"
+
+  local feature=$(get_state '.feature')
+  local bug_title=$(get_state '.bug.title')
+  local workflow_type=$(get_state '.type // "feature"')
+
+  echo "Current phase: $phase"
+  if [ "$workflow_type" == "bugfix" ]; then
+    echo "Bug: $bug_title"
+  else
+    echo "Feature: $feature"
+  fi
+  echo ""
+
+  log_warn "This will pause the workflow. You can resume later."
+  echo "Continue? (y/N)"
+  read -r confirm
+  if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
+    log_info "Cancelled"
+    return 0
+  fi
+
+  # Save abort state
+  set_state '.aborted' 'true'
+  set_state '.aborted_at' "\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\""
+  set_state '.aborted_phase' "\"$phase\""
+  add_history "Workflow aborted at phase: $phase"
+
+  log_success "Workflow aborted"
+  echo ""
+  echo "To resume: ./orchestrate.sh resume"
+  echo "To rollback: ./orchestrate.sh rollback"
+  echo "To reset: ./orchestrate.sh reset"
+}
+
+# Hard rollback - discards all changes and resets to clean state
+# WARNING: This is destructive!
+rollback_workflow() {
+  local phase=$(get_state '.phase')
+
+  if [ "$phase" == "idle" ]; then
+    log_warn "No active workflow to rollback"
+    return 0
+  fi
+
+  log_phase "ROLLBACK WORKFLOW"
+
+  local feature=$(get_state '.feature')
+  local bug_title=$(get_state '.bug.title')
+  local workflow_type=$(get_state '.type // "feature"')
+  local main_branch=$(get_state '.branch.main')
+  local codex_branch=$(get_state '.branch.codex')
+
+  echo -e "${RED}WARNING: This is a DESTRUCTIVE operation!${NC}"
+  echo ""
+  echo "This will:"
+  echo "  1. Discard all uncommitted changes"
+  echo "  2. Delete feature/fix branches (if created)"
+  echo "  3. Reset orchestration state to idle"
+  echo "  4. Return to the base branch"
+  echo ""
+
+  if [ "$workflow_type" == "bugfix" ]; then
+    echo "Bug: $bug_title"
+    local issue_number=$(get_state '.bug.issue_number')
+    if [ -n "$issue_number" ] && [ "$issue_number" != "null" ]; then
+      echo "Note: GitHub issue #$issue_number will NOT be deleted"
+      echo "      Close it manually if needed: gh issue close $issue_number"
+    fi
+  else
+    echo "Feature: $feature"
+  fi
+  echo ""
+
+  echo -e "${RED}Type 'ROLLBACK' to confirm:${NC}"
+  read -r confirm
+  if [ "$confirm" != "ROLLBACK" ]; then
+    log_info "Cancelled (did not type ROLLBACK)"
+    return 0
+  fi
+
+  cd "$PROJECT_ROOT"
+
+  # Get default branch
+  local default_branch=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@' || echo "main")
+
+  # Stash orchestrate.sh changes before checkout (preserve our changes)
+  # This is important because git checkout . would revert uncommitted edits
+
+  # Discard all changes EXCEPT orchestrate.sh
+  log_info "Discarding uncommitted changes..."
+  git checkout -- . ':!.agents/orchestrate.sh' 2>/dev/null || git checkout . 2>/dev/null || true
+  git clean -fd 2>/dev/null || true
+
+  # Switch to default branch
+  log_info "Switching to $default_branch..."
+  git checkout "$default_branch" 2>/dev/null || git checkout main 2>/dev/null || git checkout master 2>/dev/null || true
+
+  # Delete feature branches (local only, not remote)
+  if [ -n "$main_branch" ] && [ "$main_branch" != "null" ]; then
+    if git show-ref --verify --quiet "refs/heads/$main_branch"; then
+      log_info "Deleting branch: $main_branch"
+      git branch -D "$main_branch" 2>/dev/null || true
+    fi
+  fi
+
+  if [ -n "$codex_branch" ] && [ "$codex_branch" != "null" ]; then
+    if git show-ref --verify --quiet "refs/heads/$codex_branch"; then
+      log_info "Deleting branch: $codex_branch"
+      git branch -D "$codex_branch" 2>/dev/null || true
+    fi
+  fi
+
+  # Record in history before reset
+  add_history "Rollback performed from phase: $phase"
+
+  # Reset state
+  reset_state_silent
+
+  log_success "Rollback complete!"
+  echo ""
+  echo "State has been reset to idle."
+  echo "You can start fresh with: ./orchestrate.sh start <feature-name>"
+}
+
 # Model selection based on phase and complexity
 # Usage: get_model_for_phase <phase> [complexity]
 # Complexity: simple | medium | complex (default: medium)
@@ -2102,6 +2241,12 @@ case "${1:-status}" in
   reset)
     reset_state
     ;;
+  abort)
+    abort_workflow
+    ;;
+  rollback)
+    rollback_workflow
+    ;;
   budget)
     show_context_budget
     ;;
@@ -2147,6 +2292,10 @@ case "${1:-status}" in
     echo "Claude control:"
     echo "  claude-complete      Mark Claude execution complete"
     echo "  complete             Complete integration"
+    echo ""
+    echo "Workflow control:"
+    echo "  abort                Soft stop - pause workflow (can resume later)"
+    echo "  rollback             Hard reset - discard all changes, delete branches"
     echo "  reset                Reset to idle state"
     echo ""
     echo "Utilities:"
