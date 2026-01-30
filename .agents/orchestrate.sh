@@ -42,6 +42,108 @@ log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 log_phase() { echo -e "\n${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"; echo -e "${CYAN}  $1${NC}"; echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n"; }
 log_decision() { echo -e "${MAGENTA}[DECISION]${NC} $1"; }
 
+# Show next command hint based on current phase
+# Usage: show_next_command [workflow_type]
+show_next_command() {
+  local workflow_type="${1:-feature}"
+  local phase=$(get_state '.phase')
+  local autonomous=$(get_state '.autonomous.enabled // false')
+
+  echo ""
+  echo -e "${CYAN}┌─────────────────────────────────────────────────────────────┐${NC}"
+  echo -e "${CYAN}│${NC}  ${YELLOW}▶ NEXT COMMAND${NC}                                            ${CYAN}│${NC}"
+  echo -e "${CYAN}├─────────────────────────────────────────────────────────────┤${NC}"
+
+  if [ "$workflow_type" == "bugfix" ]; then
+    case "$phase" in
+      idle)
+        echo -e "${CYAN}│${NC}  ./orchestrate.sh bug \"<title>\" [critical|major|minor]     ${CYAN}│${NC}"
+        ;;
+      triage)
+        echo -e "${CYAN}│${NC}  # After identifying root cause:                           ${CYAN}│${NC}"
+        echo -e "${CYAN}│${NC}  ./orchestrate.sh approve triage                           ${CYAN}│${NC}"
+        ;;
+      plan)
+        echo -e "${CYAN}│${NC}  # After creating fix plan:                                ${CYAN}│${NC}"
+        echo -e "${CYAN}│${NC}  ./orchestrate.sh approve plan                             ${CYAN}│${NC}"
+        ;;
+      fix)
+        echo -e "${CYAN}│${NC}  # After implementing fix:                                 ${CYAN}│${NC}"
+        echo -e "${CYAN}│${NC}  ./orchestrate.sh fix-complete                             ${CYAN}│${NC}"
+        ;;
+      verify)
+        echo -e "${CYAN}│${NC}  # After verification and PR:                              ${CYAN}│${NC}"
+        echo -e "${CYAN}│${NC}  ./orchestrate.sh bug-complete                             ${CYAN}│${NC}"
+        ;;
+      *)
+        echo -e "${CYAN}│${NC}  ./orchestrate.sh bug-status                               ${CYAN}│${NC}"
+        ;;
+    esac
+  else
+    case "$phase" in
+      idle)
+        echo -e "${CYAN}│${NC}  ./orchestrate.sh start <feature-name>                     ${CYAN}│${NC}"
+        ;;
+      research)
+        echo -e "${CYAN}│${NC}  # Claude: Read .agents/prompts/researcher.md              ${CYAN}│${NC}"
+        echo -e "${CYAN}│${NC}  # After research complete:                                ${CYAN}│${NC}"
+        echo -e "${CYAN}│${NC}  ./orchestrate.sh approve research   # GO                  ${CYAN}│${NC}"
+        echo -e "${CYAN}│${NC}  ./orchestrate.sh reject research    # NO-GO               ${CYAN}│${NC}"
+        ;;
+      architect)
+        echo -e "${CYAN}│${NC}  # Claude: Read .agents/prompts/architect.md               ${CYAN}│${NC}"
+        echo -e "${CYAN}│${NC}  # After architecture complete:                            ${CYAN}│${NC}"
+        echo -e "${CYAN}│${NC}  ./orchestrate.sh next                                     ${CYAN}│${NC}"
+        ;;
+      planner)
+        echo -e "${CYAN}│${NC}  # Claude: Read .agents/prompts/planner.md                 ${CYAN}│${NC}"
+        echo -e "${CYAN}│${NC}  # After plan + Codex tasks created:                       ${CYAN}│${NC}"
+        echo -e "${CYAN}│${NC}  ./orchestrate.sh approve plan                             ${CYAN}│${NC}"
+        ;;
+      execution)
+        local claude_status=$(get_state '.phases.execution.claude.status')
+        local codex_status=$(get_state '.phases.execution.codex.status')
+        if [ "$codex_status" == "pending" ]; then
+          echo -e "${CYAN}│${NC}  ./orchestrate.sh codex-dispatch      # Start Codex        ${CYAN}│${NC}"
+        elif [ "$codex_status" == "running" ]; then
+          echo -e "${CYAN}│${NC}  ./orchestrate.sh codex-status        # Check Codex        ${CYAN}│${NC}"
+          echo -e "${CYAN}│${NC}  ./orchestrate.sh codex-complete      # When done          ${CYAN}│${NC}"
+        fi
+        if [ "$claude_status" == "in_progress" ]; then
+          echo -e "${CYAN}│${NC}  ./orchestrate.sh claude-complete     # When Claude done   ${CYAN}│${NC}"
+        fi
+        if [ "$claude_status" == "complete" ] && [ "$codex_status" == "complete" ]; then
+          echo -e "${CYAN}│${NC}  # Both complete! Moving to review...                      ${CYAN}│${NC}"
+        fi
+        ;;
+      reviewer)
+        echo -e "${CYAN}│${NC}  # Claude: Read .agents/prompts/reviewer.md                ${CYAN}│${NC}"
+        echo -e "${CYAN}│${NC}  # After review complete:                                  ${CYAN}│${NC}"
+        echo -e "${CYAN}│${NC}  ./orchestrate.sh approve review                           ${CYAN}│${NC}"
+        ;;
+      integrator)
+        echo -e "${CYAN}│${NC}  # Claude: Read .agents/prompts/integrator.md              ${CYAN}│${NC}"
+        echo -e "${CYAN}│${NC}  # After integration complete:                             ${CYAN}│${NC}"
+        echo -e "${CYAN}│${NC}  ./orchestrate.sh complete                                 ${CYAN}│${NC}"
+        ;;
+      complete)
+        echo -e "${CYAN}│${NC}  ./orchestrate.sh reset               # Start new feature  ${CYAN}│${NC}"
+        ;;
+      *)
+        echo -e "${CYAN}│${NC}  ./orchestrate.sh status                                   ${CYAN}│${NC}"
+        ;;
+    esac
+  fi
+
+  echo -e "${CYAN}└─────────────────────────────────────────────────────────────┘${NC}"
+
+  # Show autonomous mode hint if enabled
+  if [ "$autonomous" == "true" ]; then
+    local expires=$(get_state '.autonomous.expires_at // "unknown"')
+    echo -e "  ${GREEN}⚡ Autonomous mode ON${NC} (expires: $expires)"
+  fi
+}
+
 # ============================================================================
 # PRE-FLIGHT CHECK FUNCTIONS
 # ============================================================================
@@ -804,6 +906,9 @@ show_bugfix_status() {
   local model=$(get_state '.model_hint.recommended_model')
   echo ""
   echo -e "Model: ${CYAN}$model${NC} (based on severity: $severity)"
+
+  # Show next command hint
+  show_next_command "bugfix"
 }
 
 # Resume bug-fix workflow
@@ -862,6 +967,9 @@ resume_bugfix() {
       log_error "Unknown phase: $phase"
       ;;
   esac
+
+  # Show next command hint
+  show_next_command "bugfix"
 }
 
 # Approve triage checkpoint
@@ -1705,6 +1813,9 @@ show_status() {
   echo ""
   echo -e "Model Hint: ${CYAN}$model_hint${NC} (for phase: $model_phase)"
   echo "  Claude should use this model for subagents in current phase"
+
+  # Show next command hint
+  show_next_command "feature"
 }
 
 # Start new feature
@@ -2397,6 +2508,9 @@ resume_workflow() {
       log_error "Unknown phase: $phase"
       ;;
   esac
+
+  # Show next command hint
+  show_next_command "feature"
 }
 
 # Move to next phase
