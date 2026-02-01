@@ -2064,7 +2064,8 @@ codex_complete() {
   add_history "Codex execution completed"
 
   # Try to advance to next phase (handles both complete case)
-  try_advance_from_execution
+  # "Waiting for other" is informational, not an error - always return success
+  try_advance_from_execution || true
 }
 
 # Commit Codex changes (handles sandbox git restrictions)
@@ -2114,7 +2115,8 @@ claude_complete() {
   add_history "Claude execution completed"
 
   # Try to advance to next phase (handles both complete case)
-  try_advance_from_execution
+  # "Waiting for other" is informational, not an error - always return success
+  try_advance_from_execution || true
 }
 
 # Check Codex status (for monitoring background tasks)

@@ -575,6 +575,11 @@ main() {
   # Initialize log file
   echo "=== Test Run: $(date) ===" > "$LOG_FILE"
 
+  # Save original branch to return to after tests
+  ORIGINAL_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
+  ORIGINAL_COMMIT=$(git rev-parse HEAD 2>/dev/null)
+  log_info "Starting from branch: $ORIGINAL_BRANCH ($ORIGINAL_COMMIT)"
+
   # Backup current state
   backup_state
 
@@ -604,6 +609,17 @@ main() {
   # Cleanup
   cleanup_mocks
   restore_state
+
+  # Return to original branch and clean up test branches
+  log_info "Returning to original branch: $ORIGINAL_BRANCH"
+  cd "$PROJECT_ROOT"
+  git checkout "$ORIGINAL_BRANCH" 2>/dev/null || git checkout "$ORIGINAL_COMMIT" 2>/dev/null || true
+
+  # Clean up test feature branches created during tests
+  for branch in $(git branch --list "feature/test-*" "feature/full-*" "feature/abort-*" "feature/model-*" 2>/dev/null); do
+    git branch -D "$branch" 2>/dev/null || true
+  done
+  log_info "Test branches cleaned up"
 
   # Summary
   echo ""
