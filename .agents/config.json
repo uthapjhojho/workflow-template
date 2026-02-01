@@ -35,6 +35,13 @@
         "model": "GLM-4.7",
         "env_key": "ZAI_API_KEY"
       },
+      "claude": {
+        "name": "Claude (Anthropic)",
+        "type": "anthropic",
+        "api_base": "https://api.anthropic.com/v1",
+        "model": "claude-sonnet-4-5-20241022",
+        "env_key": "ANTHROPIC_API_KEY"
+      },
       "codex": {
         "name": "OpenAI Codex",
         "type": "cli",
@@ -56,5 +63,17 @@
         "env_key": "MOONSHOT_API_KEY"
       }
     }
+  },
+  "ai_task_routing": {
+    "_comment": "Maps task types to providers. Use 'glm' for structured text, 'claude' for reasoning tasks. Set to null to disable.",
+    "code_execution": "glm",
+    "pr_description": "glm",
+    "documentation": "glm",
+    "commit_message": "glm",
+    "changelog": "glm",
+    "test_generation": "claude",
+    "research_summary": "claude",
+    "error_explanation": "claude",
+    "code_review": "claude"
   }
 }

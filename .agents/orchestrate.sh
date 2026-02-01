@@ -3331,6 +3331,64 @@ case "${1:-status}" in
       log_success "Switched to $provider_name ($new_provider)"
     fi
     ;;
+  draft-pr)
+    # Generate PR description using AI
+    log_info "Generating PR description..."
+    "$SCRIPT_DIR/ai-assist.sh" pr_description "${@:2}"
+    ;;
+  draft-commit)
+    # Generate commit message using AI
+    log_info "Generating commit message..."
+    "$SCRIPT_DIR/ai-assist.sh" commit_message "${@:2}"
+    ;;
+  generate-docs)
+    # Generate documentation for a file
+    if [ -z "$2" ]; then
+      log_error "Usage: ./orchestrate.sh generate-docs <file-or-directory>"
+      exit 1
+    fi
+    log_info "Generating documentation for: $2"
+    "$SCRIPT_DIR/ai-assist.sh" documentation "$2" "${@:3}"
+    ;;
+  generate-changelog)
+    # Generate changelog from commits
+    log_info "Generating changelog..."
+    "$SCRIPT_DIR/ai-assist.sh" changelog "${@:2}"
+    ;;
+  generate-tests)
+    # Generate test cases for code
+    if [ -z "$2" ]; then
+      log_error "Usage: ./orchestrate.sh generate-tests <file>"
+      exit 1
+    fi
+    log_info "Generating tests for: $2"
+    "$SCRIPT_DIR/ai-assist.sh" test_generation "$2" "${@:3}"
+    ;;
+  explain-error)
+    # Explain an error message
+    log_info "Explaining error..."
+    "$SCRIPT_DIR/ai-assist.sh" error_explanation "${@:2}"
+    ;;
+  review-code)
+    # Review code changes
+    log_info "Reviewing code..."
+    "$SCRIPT_DIR/ai-assist.sh" code_review "${@:2}"
+    ;;
+  ai-assist)
+    # Direct access to ai-assist.sh
+    "$SCRIPT_DIR/ai-assist.sh" "${@:2}"
+    ;;
+  ai-routing)
+    # Show AI task routing configuration
+    echo "=== AI Task Routing ==="
+    echo ""
+    jq -r '.ai_task_routing | to_entries[] | select(.key != "_comment") | "\(.key): \(.value // "disabled")"' "$CONFIG_FILE"
+    echo ""
+    echo "Providers:"
+    jq -r '.ai_provider.providers | to_entries[] | "  \(.key): \(.value.name) (\(.value.model))"' "$CONFIG_FILE"
+    echo ""
+    echo "To change routing, edit: $CONFIG_FILE"
+    ;;
   memory)
     case "${2:-show}" in
       show)
@@ -3426,9 +3484,21 @@ case "${1:-status}" in
     echo "  ai-attach            Attach to running AI dispatch tmux session"
     echo "  ai-windows           Show all AI dispatch tmux sessions"
     echo ""
+    echo "AI Assist (configurable via ai_task_routing in config.json):"
+    echo "  draft-pr [base]      Generate PR description (default base: main)"
+    echo "  draft-commit         Generate commit message from staged changes"
+    echo "  generate-docs <file> Generate documentation for file/directory"
+    echo "  generate-changelog [from] [to]  Generate changelog from commits"
+    echo "  generate-tests <file>  Generate test cases for code"
+    echo "  explain-error <msg>  Explain an error message"
+    echo "  review-code [file]   Review code changes"
+    echo "  ai-assist <task> ... Direct access to ai-assist.sh"
+    echo "  ai-routing           Show AI task routing configuration"
+    echo ""
     echo "Utilities:"
     echo "  preflight            Run pre-flight checks (git, tools, auth)"
     echo "  budget               Show context token budget estimate"
     echo "  model <phase> [complexity]  Get recommended model for phase"
+    echo "  provider [name]      Show or switch AI provider"
     ;;
 esac
