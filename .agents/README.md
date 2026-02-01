@@ -61,10 +61,25 @@ created             (auto-links)
 |---------|-------------|
 | `status` | Show current state (auto-detects workflow) |
 | `resume` | Get guidance for current phase |
-| `codex-dispatch` | Launch Codex tasks |
-| `codex-complete` | Mark Codex work done |
+| `codex-dispatch` | Launch AI tasks (GLM, Codex, DeepSeek, etc.) |
+| `codex-complete` | Mark AI task execution done |
 | `claude-complete` | Mark Claude work done |
 | `reset` | Clear state for new workflow |
+
+### AI Provider Control
+| Command | Description |
+|---------|-------------|
+| `provider` | Show current AI provider |
+| `provider glm` | Switch to Z.AI GLM-4.7 |
+| `provider codex` | Switch to OpenAI Codex |
+| `provider deepseek` | Switch to DeepSeek Coder |
+| `provider moonshot` | Switch to Moonshot |
+
+**Environment Variables:**
+- `ZAI_API_KEY` - Z.AI GLM API key
+- `OPENAI_API_KEY` - OpenAI Codex API key  
+- `DEEPSEEK_API_KEY` - DeepSeek API key
+- `MOONSHOT_API_KEY` - Moonshot API key
 
 ### Workflow Control
 | Command | Description |

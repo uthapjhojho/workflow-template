@@ -20,7 +20,41 @@
   "paths": {
     "plans_active": "docs/plans/active",
     "plans_archive": "docs/plans/archive",
-    "codex_tasks": ".agents/codex-tasks",
+    "ai_tasks": ".agents/ai-tasks",
     "outputs": ".agents/outputs"
+  },
+  "ai_provider": {
+    "active": "glm",
+    "max_tokens": 4096,
+    "temperature": 0.1,
+    "providers": {
+      "glm": {
+        "name": "Z.AI GLM",
+        "type": "api",
+        "api_base": "https://api.z.ai/api/coding/paas/v4",
+        "model": "GLM-4.7",
+        "env_key": "ZAI_API_KEY"
+      },
+      "codex": {
+        "name": "OpenAI Codex",
+        "type": "cli",
+        "command": "codex exec --full-auto",
+        "env_key": "OPENAI_API_KEY"
+      },
+      "deepseek": {
+        "name": "DeepSeek",
+        "type": "api",
+        "api_base": "https://api.deepseek.com/v1",
+        "model": "deepseek-coder",
+        "env_key": "DEEPSEEK_API_KEY"
+      },
+      "moonshot": {
+        "name": "Moonshot",
+        "type": "api",
+        "api_base": "https://api.moonshot.cn/v1",
+        "model": "moonshot-v1-8k",
+        "env_key": "MOONSHOT_API_KEY"
+      }
+    }
   }
 }

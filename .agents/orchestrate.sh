@@ -21,7 +21,7 @@ STATE_FILE="$SCRIPT_DIR/state.json"
 CODEX_TASKS_DIR="$SCRIPT_DIR/codex-tasks"
 OUTPUTS_DIR="$SCRIPT_DIR/outputs"
 PLANS_DIR="$PROJECT_ROOT/docs/plans/active"
-CODEX_LOG_FILE="$SCRIPT_DIR/codex-dispatch.log"
+CODEX_LOG_FILE="$SCRIPT_DIR/ai-dispatch.log"
 CODEX_FAILURES_FILE="$SCRIPT_DIR/codex-failures.json"
 CONFIG_FILE="$SCRIPT_DIR/config.json"
 LOGS_DIR="$SCRIPT_DIR/logs"
@@ -1620,7 +1620,7 @@ autonomous_mode() {
 
 # Check if Codex dispatch is currently running
 codex_is_running() {
-  local pid_file="$SCRIPT_DIR/codex-dispatch.pid"
+  local pid_file="$SCRIPT_DIR/ai-dispatch.pid"
   if [ -f "$pid_file" ]; then
     local pid=$(cat "$pid_file")
     if ps -p "$pid" > /dev/null 2>&1; then
@@ -1727,7 +1727,7 @@ codex_retry_failed() {
 
   # Re-dispatch Codex in background
   log_info "Re-dispatching Codex..."
-  "$SCRIPT_DIR/dispatch-codex.sh" --background --retry
+  "$SCRIPT_DIR/dispatch-ai.sh" --background --retry
 
   log_success "Codex retry dispatched"
   echo "Monitor with: ./orchestrate.sh codex-status"
@@ -1788,7 +1788,7 @@ claude_codex_auto() {
       set_state '.phases.execution.codex.retry_count' '0'
 
       # Launch Codex in background
-      "$SCRIPT_DIR/dispatch-codex.sh" --background
+      "$SCRIPT_DIR/dispatch-ai.sh" --background
 
       log_success "Codex launched in background ($pending_tasks tasks)"
       echo ""
@@ -1797,7 +1797,7 @@ claude_codex_auto() {
       echo "Commands:"
       echo "  Check progress:  ./orchestrate.sh claude-codex-auto --check"
       echo "  View status:     ./orchestrate.sh codex-status"
-      echo "  View log:        tail -f .agents/codex-dispatch.log"
+      echo "  View log:        tail -f .agents/ai-dispatch.log"
 
       add_history "Claude-Codex auto: launched $pending_tasks task(s) in background"
       ;;
@@ -1808,14 +1808,14 @@ claude_codex_auto() {
       set_state '.phases.execution.codex.retry_count' '0'
 
       # Run Codex synchronously
-      "$SCRIPT_DIR/dispatch-codex.sh"
+      "$SCRIPT_DIR/dispatch-ai.sh"
 
       # Check for failures and retry if needed
       if codex_has_failures; then
         log_warn "Some Codex tasks failed. Attempting retry..."
         codex_retry_failed
         # Wait for retry
-        "$SCRIPT_DIR/dispatch-codex.sh" --status
+        "$SCRIPT_DIR/dispatch-ai.sh" --status
       fi
 
       # Finalize
@@ -1827,7 +1827,7 @@ claude_codex_auto() {
       if codex_is_running; then
         echo "Codex is still running."
         echo ""
-        "$SCRIPT_DIR/dispatch-codex.sh" --status
+        "$SCRIPT_DIR/dispatch-ai.sh" --status
         echo ""
         echo "Claude can continue working. Check again later."
         return 0
@@ -3092,7 +3092,7 @@ resume_workflow() {
         echo "Claude: Continue executing tasks in the plan"
         echo ""
         echo "To dispatch Codex in background (Claude can continue working):"
-        echo "  ./.agents/dispatch-codex.sh &"
+        echo "  ./.agents/dispatch-ai.sh &"
         echo "  # Then check status with: ./orchestrate.sh codex-status"
         echo ""
         echo "When Claude completes: ./orchestrate.sh claude-complete"
@@ -3103,7 +3103,7 @@ resume_workflow() {
         echo "Codex: $codex_total task(s) ready to dispatch"
         echo "  Manual:     ./orchestrate.sh codex-dispatch"
         echo "  Auto:       ./orchestrate.sh codex-dispatch --auto"
-        echo "  Background: ./.agents/dispatch-codex.sh &"
+        echo "  Background: ./.agents/dispatch-ai.sh &"
       elif [ "$codex_status" == "running" ]; then
         echo ""
         echo "Codex: Tasks running. Check status: ./orchestrate.sh codex-status"
@@ -3245,6 +3245,44 @@ case "${1:-status}" in
   codex-status)
     codex_status
     ;;
+  ai-attach)
+    # Attach to running AI dispatch tmux session
+    AI_PID_FILE="$SCRIPT_DIR/ai-dispatch.pid"
+    if [ -f "$AI_PID_FILE" ]; then
+      SESSION_NAME=$(cat "$AI_PID_FILE")
+      if [[ "$SESSION_NAME" == ai-dispatch-* ]]; then
+        if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+          log_info "Attaching to session: $SESSION_NAME"
+          tmux attach -t "$SESSION_NAME"
+        else
+          log_error "Session '$SESSION_NAME' not found (may have completed)"
+          rm -f "$AI_PID_FILE"
+        fi
+      else
+        log_error "Legacy PID-based dispatch running. Use: tail -f $SCRIPT_DIR/ai-dispatch.log"
+      fi
+    else
+      log_error "No AI dispatch session running"
+      echo "Start one with: ./.agents/dispatch-ai.sh --background"
+    fi
+    ;;
+  ai-windows)
+    # Show all AI dispatch tmux sessions
+    echo "=== AI Dispatch Sessions ==="
+    echo ""
+    if command -v tmux &> /dev/null; then
+      SESSIONS=$(tmux list-sessions 2>/dev/null | grep "^ai-dispatch-" || true)
+      if [ -n "$SESSIONS" ]; then
+        echo "$SESSIONS"
+        echo ""
+        echo "Attach with: tmux attach -t <session-name>"
+      else
+        echo "No active AI dispatch sessions."
+      fi
+    else
+      log_warn "tmux not installed"
+    fi
+    ;;
   claude-complete)
     claude_complete
     ;;
@@ -3265,6 +3303,33 @@ case "${1:-status}" in
     ;;
   model)
     show_model_recommendation "$2" "$3"
+    ;;
+  provider)
+    # Switch AI provider for task dispatch
+    new_provider="$2"
+    if [ -z "$new_provider" ]; then
+      # Show current provider
+      current=$(jq -r '.ai_provider.active' "$CONFIG_FILE")
+      name=$(jq -r ".ai_provider.providers.${current}.name" "$CONFIG_FILE")
+      echo "Current AI provider: $name ($current)"
+      echo ""
+      echo "Available providers:"
+      jq -r '.ai_provider.providers | to_entries[] | "  \(.key): \(.value.name)"' "$CONFIG_FILE"
+      echo ""
+      echo "Switch with: ./orchestrate.sh provider <name>"
+    else
+      # Validate provider exists
+      provider_name=$(jq -r ".ai_provider.providers.${new_provider}.name // empty" "$CONFIG_FILE")
+      if [ -z "$provider_name" ]; then
+        log_error "Unknown provider: $new_provider"
+        echo "Available: $(jq -r '.ai_provider.providers | keys | join(", ")' "$CONFIG_FILE")"
+        exit 1
+      fi
+      # Update config
+      tmp="${CONFIG_FILE}.tmp"
+      jq ".ai_provider.active = \"$new_provider\"" "$CONFIG_FILE" > "$tmp" && mv "$tmp" "$CONFIG_FILE"
+      log_success "Switched to $provider_name ($new_provider)"
+    fi
     ;;
   memory)
     case "${2:-show}" in
@@ -3356,6 +3421,10 @@ case "${1:-status}" in
     echo "  logs <workflow-id>   Show specific workflow log"
     echo "  analytics            Show aggregate statistics across all workflows"
     echo "  metrics              Show current workflow metrics"
+    echo ""
+    echo "AI Session Management:"
+    echo "  ai-attach            Attach to running AI dispatch tmux session"
+    echo "  ai-windows           Show all AI dispatch tmux sessions"
     echo ""
     echo "Utilities:"
     echo "  preflight            Run pre-flight checks (git, tools, auth)"
