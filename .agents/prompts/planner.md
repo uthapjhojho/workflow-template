@@ -8,7 +8,7 @@ Transform the architecture into an executable plan with clear task assignments f
 
 ---
 
-## ⚠️ CRITICAL REQUIREMENT
+## CRITICAL REQUIREMENT
 
 **YOU MUST CREATE CODEX TASK FILES.**
 
@@ -25,10 +25,14 @@ If there are NO tasks suitable for Codex (all sequential/dependent), you must ex
 
 ## Context
 
-- **Project:** whatsapp-mcp
+- **Project:** Read from `.agents/config.json` → `project_name`
 - **Feature:** Read from `.agents/state.json` → `.feature` field
 - **Architecture:** Read from `.agents/outputs/architecture.md`
 - **Plan Template:** `docs/plans/templates/ralph-plan-template.md`
+
+## Prior Learnings
+
+Check `.agents/memory.md` for planning patterns and learnings from previous workflows.
 
 ## Your Tasks
 
@@ -77,7 +81,7 @@ Create `docs/plans/active/<feature-name>.md`:
 
 ---
 
-## ⏸️ HARD STOP - Phase 1 Complete
+## HARD STOP - Phase 1 Complete
 Human review required before parallel execution.
 
 **Checklist:**
@@ -109,7 +113,7 @@ Human review required before parallel execution.
 
 ---
 
-## ⏸️ HARD STOP - Phase 2 Complete
+## HARD STOP - Phase 2 Complete
 Wait for both Claude and Codex to complete.
 
 **Checklist:**
@@ -126,7 +130,7 @@ Wait for both Claude and Codex to complete.
 
 ---
 
-## ⏸️ HARD STOP - Execution Complete
+## HARD STOP - Execution Complete
 All implementation done. Ready for review.
 
 **→ Proceed to review: `./orchestrate.sh approve plan`** (if this is initial approval)
@@ -148,7 +152,7 @@ For EACH `[CODEX]` task, create `.agents/codex-tasks/task-X.X-<name>.md`:
 # Codex Task: [Task Name]
 
 ## Context
-You are implementing part of the [feature] feature for whatsapp-mcp.
+You are implementing part of the [feature] feature.
 
 **Branch:** `codex/<feature-name>` (checkout before starting)
 **Related Tasks:** This task is independent and can run in parallel.

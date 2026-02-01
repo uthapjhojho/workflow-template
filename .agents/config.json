@@ -1,0 +1,26 @@
+{
+  "project_name": "workflow-template",
+  "project_root": ".",
+  "description": "Multi-agent orchestration template",
+  "settings": {
+    "notion_enabled": false,
+    "github_enabled": true,
+    "default_severity": "major",
+    "default_complexity": "medium"
+  },
+  "models": {
+    "architect": "opus",
+    "planner": "sonnet",
+    "execution_simple": "haiku",
+    "execution_medium": "sonnet",
+    "execution_complex": "opus",
+    "reviewer": "sonnet",
+    "integrator": "sonnet"
+  },
+  "paths": {
+    "plans_active": "docs/plans/active",
+    "plans_archive": "docs/plans/archive",
+    "codex_tasks": ".agents/codex-tasks",
+    "outputs": ".agents/outputs"
+  }
+}

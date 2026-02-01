@@ -8,9 +8,14 @@ Design the user experience and interface specifications that will guide implemen
 
 ## Context
 
-- **Project:** Read from `.agents/state.json` → `.feature` field
+- **Project:** Read from `.agents/config.json` → `project_name`
+- **Feature:** Read from `.agents/state.json` → `.feature` field
 - **Architecture:** Read from `.agents/outputs/architecture.md`
 - **Research:** Read from `.agents/outputs/research.md` (if available)
+
+## Prior Learnings
+
+Check `.agents/memory.md` for UX patterns and decisions from previous workflows.
 
 ## Your Tasks
 

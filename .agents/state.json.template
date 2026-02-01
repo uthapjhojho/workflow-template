@@ -1,29 +1,63 @@
 {
+  "type": "feature",
   "feature": null,
+  "bug": {
+    "title": null,
+    "issue_number": null,
+    "issue_url": null,
+    "severity": null,
+    "branch": null
+  },
   "branch": {
     "main": null,
     "codex": null
   },
   "phase": "idle",
   "phases": {
+    "triage": { "status": "pending", "output": null, "approved": false },
     "research": { "status": "pending", "output": null, "approved": false },
     "architect": { "status": "pending", "output": null },
     "planner": { "status": "pending", "output": null, "approved": false },
+    "plan": { "status": "pending", "output": null, "approved": false },
     "execution": {
       "status": "pending",
       "claude": { "status": "pending", "current_task": null },
-      "codex": { "status": "pending", "tasks_completed": 0, "tasks_total": 0 }
+      "codex": { "status": "pending", "tasks_completed": 0, "tasks_total": 0, "retry_count": 0 }
     },
+    "fix": { "status": "pending" },
+    "verify": { "status": "pending", "output": null },
     "reviewer": { "status": "pending", "output": null, "approved": false },
     "integrator": { "status": "pending", "notion_updated": false, "merged": false }
   },
+  "autonomous": {
+    "enabled": false,
+    "enabled_at": null,
+    "enabled_by": null,
+    "timeout_hours": null,
+    "expires_at": null,
+    "auto_approved": []
+  },
+  "model_hint": {
+    "phase": null,
+    "complexity": "medium",
+    "severity": null,
+    "recommended_model": "sonnet",
+    "updated_at": null
+  },
   "tasks": {},
   "checkpoints": {
+    "triage_approved": false,
     "research_approved": false,
     "plan_approved": false,
     "execution_complete": false,
     "review_approved": false,
     "integration_complete": false
   },
-  "history": []
+  "history": [],
+  "metrics": {
+    "started_at": null,
+    "completed_at": null,
+    "phase_durations": {},
+    "total_duration_ms": null
+  }
 }

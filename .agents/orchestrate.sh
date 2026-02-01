@@ -24,6 +24,8 @@ PLANS_DIR="$PROJECT_ROOT/docs/plans/active"
 CODEX_LOG_FILE="$SCRIPT_DIR/codex-dispatch.log"
 CODEX_FAILURES_FILE="$SCRIPT_DIR/codex-failures.json"
 CONFIG_FILE="$SCRIPT_DIR/config.json"
+LOGS_DIR="$SCRIPT_DIR/logs"
+AGGREGATE_FILE="$LOGS_DIR/aggregate.json"
 
 # Colors
 RED='\033[0;31m'
@@ -734,8 +736,15 @@ set_state() {
 }
 
 # Add history entry with file locking
+# Usage: add_history <message> [event] [phase] [outcome] [duration_ms] [tokens_est] [model]
 add_history() {
   local message="$1"
+  local event="${2:-info}"
+  local phase="${3:-}"
+  local outcome="${4:-}"
+  local duration_ms="${5:-}"
+  local tokens_est="${6:-}"
+  local model="${7:-}"
   local timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   local tmp="${STATE_FILE}.tmp"
 
@@ -744,14 +753,40 @@ add_history() {
     return 1
   fi
 
+  # Build JSON entry with optional fields
+  local entry="{\"timestamp\": \"$timestamp\", \"event\": \"$event\", \"message\": \"$message\""
+  [ -n "$phase" ] && entry="$entry, \"phase\": \"$phase\""
+  [ -n "$outcome" ] && entry="$entry, \"outcome\": \"$outcome\""
+  [ -n "$duration_ms" ] && entry="$entry, \"duration_ms\": $duration_ms"
+  [ -n "$tokens_est" ] && entry="$entry, \"tokens_est\": $tokens_est"
+  [ -n "$model" ] && entry="$entry, \"model\": \"$model\""
+  entry="$entry}"
+
   # Perform update
-  if jq ".history += [{\"timestamp\": \"$timestamp\", \"message\": \"$message\"}]" "$STATE_FILE" > "$tmp" 2>/dev/null && mv "$tmp" "$STATE_FILE"; then
+  if jq ".history += [$entry]" "$STATE_FILE" > "$tmp" 2>/dev/null && mv "$tmp" "$STATE_FILE"; then
     release_state_lock
     return 0
   else
     release_state_lock
     log_error "Failed to add history entry"
     return 1
+  fi
+}
+
+# Track phase start time (stored in temp file for duration calculation)
+PHASE_START_FILE="$SCRIPT_DIR/.phase-start"
+
+start_phase_timer() {
+  date +%s > "$PHASE_START_FILE"
+}
+
+get_phase_duration_ms() {
+  if [ -f "$PHASE_START_FILE" ]; then
+    local start=$(cat "$PHASE_START_FILE")
+    local now=$(date +%s)
+    echo $(( (now - start) * 1000 ))
+  else
+    echo "0"
   fi
 }
 
@@ -879,6 +914,7 @@ start_bugfix() {
   }
 
   # Initialize state for bug-fix workflow
+  local started_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   set_state '.type' '"bugfix"'
   set_state '.feature' "null"
   set_state '.bug.title' "\"$bug_title\""
@@ -890,7 +926,8 @@ start_bugfix() {
   set_state '.branch.codex' "\"codex/${issue_number}-${kebab_title}\""
   set_state '.phase' '"triage"'
   set_state '.phases.triage.status' '"in_progress"'
-  add_history "Started bug-fix: #$issue_number - $bug_title (severity: $severity)"
+  set_state '.metrics.started_at' "\"$started_at\""
+  add_history "Started bug-fix: #$issue_number - $bug_title (severity: $severity)" "workflow_start" "triage"
 
   # Set model hint based on severity
   local model=$(get_bugfix_model "triage" "$severity")
@@ -1117,7 +1154,8 @@ complete_bugfix() {
 
   set_state '.phases.verify.status' '"complete"'
   set_state '.phase' '"complete"'
-  add_history "Bug-fix complete: #$issue_number - $bug_title"
+  set_state '.metrics.completed_at' "\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\""
+  add_history "Bug-fix complete: #$issue_number - $bug_title" "workflow_complete" "verify" "completed"
 
   # Archive plan if exists
   local plan_file="$PLANS_DIR/fix-${issue_number}.md"
@@ -1128,6 +1166,12 @@ complete_bugfix() {
     mv "$plan_file" "$archive_dir/$archive_name"
     log_info "Plan archived to: docs/plans/archive/$archive_name"
   fi
+
+  # Save workflow log and update aggregate
+  save_workflow_log "fix-$issue_number" "bugfix" "completed"
+
+  # Auto-append to memory
+  append_workflow_summary "fix-$issue_number" "bugfix"
 
   log_success "Bug-fix workflow complete!"
   echo ""
@@ -1900,12 +1944,15 @@ start_feature() {
   log_phase "STARTING NEW FEATURE: $normalized"
 
   # Initialize state - START WITH RESEARCH PHASE
+  local started_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   set_state '.feature' "\"$normalized\""
+  set_state '.type' '"feature"'
   set_state '.branch.main' "\"$branch_name\""
   set_state '.branch.codex' "\"$codex_branch\""
   set_state '.phase' '"research"'
   set_state '.phases.research.status' '"in_progress"'
-  add_history "Started feature: $normalized (research phase)"
+  set_state '.metrics.started_at' "\"$started_at\""
+  add_history "Started feature: $normalized (research phase)" "workflow_start" "research"
 
   # Set model hint for research phase
   update_model_hint "research"
@@ -2460,6 +2507,463 @@ EOF
   rm -f "$SCRIPT_DIR/model-hint.txt" 2>/dev/null || true
 }
 
+# ============================================================================
+# MEMORY FUNCTIONS (Cross-session learnings)
+# ============================================================================
+
+MEMORY_FILE="$SCRIPT_DIR/memory.md"
+
+# Show memory contents
+show_memory() {
+  if [ ! -f "$MEMORY_FILE" ]; then
+    log_warn "Memory file not found. Creating template..."
+    create_memory_template
+  fi
+
+  log_phase "WORKFLOW MEMORY"
+  cat "$MEMORY_FILE"
+}
+
+# Add entry to memory
+# Usage: add_memory <type> <entry>
+# Types: pattern, decision, failure, success
+add_memory() {
+  local type="$1"
+  local entry="$2"
+  local timestamp=$(date +"%Y-%m-%d")
+
+  if [ -z "$type" ]; then
+    log_error "Usage: ./orchestrate.sh memory add <type> \"<entry>\""
+    echo ""
+    echo "Types:"
+    echo "  pattern   - Architectural/implementation pattern that worked well"
+    echo "  decision  - Key decision and its rationale"
+    echo "  failure   - What didn't work and why"
+    echo "  success   - What worked particularly well"
+    return 1
+  fi
+
+  if [ -z "$entry" ]; then
+    log_error "Please provide an entry text"
+    echo "Usage: ./orchestrate.sh memory add $type \"Your entry here\""
+    return 1
+  fi
+
+  if [ ! -f "$MEMORY_FILE" ]; then
+    create_memory_template
+  fi
+
+  # Map type to section header
+  local section=""
+  case "$type" in
+    pattern|patterns)
+      section="## Patterns"
+      type="pattern"
+      ;;
+    decision|decisions)
+      section="## Decisions"
+      type="decision"
+      ;;
+    failure|failures)
+      section="## Failures"
+      type="failure"
+      ;;
+    success|successes)
+      section="## Successes"
+      type="success"
+      ;;
+    *)
+      log_error "Unknown type: $type"
+      echo "Valid types: pattern, decision, failure, success"
+      return 1
+      ;;
+  esac
+
+  # Insert entry after the section header
+  local tmp="${MEMORY_FILE}.tmp"
+  local feature=$(get_state '.feature // "unknown"')
+  local entry_line="- [$timestamp] ($feature) $entry"
+
+  # Use awk to insert the entry after the section header
+  awk -v section="$section" -v entry="$entry_line" '
+    $0 == section { print; getline; print entry; next }
+    { print }
+  ' "$MEMORY_FILE" > "$tmp" && mv "$tmp" "$MEMORY_FILE"
+
+  log_success "Added $type to memory"
+}
+
+# Clear memory (with confirmation)
+clear_memory() {
+  if [ ! -f "$MEMORY_FILE" ]; then
+    log_warn "Memory file doesn't exist"
+    return 0
+  fi
+
+  log_warn "This will clear all memory entries. Continue? (y/N)"
+  read -r confirm
+  if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
+    log_info "Cancelled"
+    return 0
+  fi
+
+  create_memory_template
+  log_success "Memory cleared"
+}
+
+# Create memory template
+create_memory_template() {
+  cat > "$MEMORY_FILE" << 'EOF'
+# Workflow Memory
+
+Cross-session learnings accumulated from completed workflows.
+
+---
+
+## Patterns
+
+<!-- Architectural and implementation patterns that worked well -->
+
+## Decisions
+
+<!-- Key decisions made and their rationale -->
+
+## Failures
+
+<!-- What didn't work and why -->
+
+## Successes
+
+<!-- What worked particularly well -->
+
+---
+
+*This file is automatically appended by `./orchestrate.sh` on workflow completion.*
+*Use `./orchestrate.sh memory show` to view, `./orchestrate.sh memory add <type>` to add entries.*
+EOF
+}
+
+# Auto-append workflow summary to memory on completion
+append_workflow_summary() {
+  local feature="$1"
+  local workflow_type="$2"
+  local timestamp=$(date +"%Y-%m-%d")
+
+  if [ ! -f "$MEMORY_FILE" ]; then
+    create_memory_template
+  fi
+
+  # Add a success entry for completed workflow
+  local entry_line="- [$timestamp] ($feature) Workflow completed successfully [type: $workflow_type]"
+
+  local tmp="${MEMORY_FILE}.tmp"
+  awk -v entry="$entry_line" '
+    $0 == "## Successes" { print; getline; print entry; next }
+    { print }
+  ' "$MEMORY_FILE" > "$tmp" && mv "$tmp" "$MEMORY_FILE"
+
+  log_info "Workflow summary added to memory"
+}
+
+# ============================================================================
+# WORKFLOW LOGGING & ANALYTICS
+# ============================================================================
+
+# Initialize aggregate file if it doesn't exist
+init_aggregate() {
+  mkdir -p "$LOGS_DIR"
+  if [ ! -f "$AGGREGATE_FILE" ]; then
+    cat > "$AGGREGATE_FILE" << 'EOF'
+{
+  "workflows_completed": 0,
+  "workflows_aborted": 0,
+  "avg_duration_ms": {
+    "research": null,
+    "architect": null,
+    "planner": null,
+    "execution": null,
+    "reviewer": null,
+    "integrator": null,
+    "total": null
+  },
+  "success_rate": {
+    "workflows": null,
+    "codex_tasks": null
+  },
+  "total_tokens_est": 0,
+  "common_failures": [],
+  "last_updated": null
+}
+EOF
+  fi
+}
+
+# Save workflow log on completion
+# Creates: .agents/logs/workflow-YYYY-MM-DD-<feature-name>.json
+save_workflow_log() {
+  local feature="$1"
+  local workflow_type="$2"
+  local outcome="${3:-completed}"
+
+  mkdir -p "$LOGS_DIR"
+
+  local date_str=$(date +"%Y-%m-%d")
+  local feature_slug=$(echo "$feature" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g' | sed 's/--*/-/g' | cut -c1-30)
+  local log_file="$LOGS_DIR/workflow-${date_str}-${feature_slug}.json"
+
+  # Get metrics from state
+  local started_at=$(get_state '.metrics.started_at // null')
+  local completed_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+  # Calculate total duration if we have start time
+  local total_duration_ms="null"
+  if [ "$started_at" != "null" ] && [ -n "$started_at" ]; then
+    local start_epoch=$(date -j -f "%Y-%m-%dT%H:%M:%SZ" "$started_at" "+%s" 2>/dev/null || date -d "$started_at" "+%s" 2>/dev/null || echo "0")
+    local end_epoch=$(date +%s)
+    if [ "$start_epoch" -gt 0 ]; then
+      total_duration_ms=$(( (end_epoch - start_epoch) * 1000 ))
+    fi
+  fi
+
+  # Get history entries
+  local history=$(get_state '.history')
+
+  # Get phase durations from state
+  local phase_durations=$(get_state '.metrics.phase_durations // {}')
+
+  # Build log JSON
+  cat > "$log_file" << EOF
+{
+  "workflow_id": "${date_str}-${feature_slug}",
+  "feature": "$feature",
+  "type": "$workflow_type",
+  "outcome": "$outcome",
+  "started_at": $started_at,
+  "completed_at": "$completed_at",
+  "total_duration_ms": $total_duration_ms,
+  "phase_durations": $phase_durations,
+  "history": $history
+}
+EOF
+
+  log_info "Workflow log saved: logs/workflow-${date_str}-${feature_slug}.json"
+
+  # Update aggregate stats
+  update_aggregate "$workflow_type" "$outcome" "$total_duration_ms"
+}
+
+# Update aggregate statistics
+update_aggregate() {
+  local workflow_type="$1"
+  local outcome="$2"
+  local duration_ms="$3"
+
+  init_aggregate
+
+  local tmp="${AGGREGATE_FILE}.tmp"
+
+  # Increment completed/aborted count
+  if [ "$outcome" == "completed" ]; then
+    jq '.workflows_completed += 1' "$AGGREGATE_FILE" > "$tmp" && mv "$tmp" "$AGGREGATE_FILE"
+  else
+    jq '.workflows_aborted += 1' "$AGGREGATE_FILE" > "$tmp" && mv "$tmp" "$AGGREGATE_FILE"
+  fi
+
+  # Update last_updated timestamp
+  local timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  jq ".last_updated = \"$timestamp\"" "$AGGREGATE_FILE" > "$tmp" && mv "$tmp" "$AGGREGATE_FILE"
+
+  # Calculate success rate
+  local completed=$(jq -r '.workflows_completed' "$AGGREGATE_FILE")
+  local aborted=$(jq -r '.workflows_aborted' "$AGGREGATE_FILE")
+  local total=$((completed + aborted))
+  if [ "$total" -gt 0 ]; then
+    local rate=$(echo "scale=2; $completed / $total" | bc 2>/dev/null || echo "null")
+    if [ "$rate" != "null" ]; then
+      jq ".success_rate.workflows = $rate" "$AGGREGATE_FILE" > "$tmp" && mv "$tmp" "$AGGREGATE_FILE"
+    fi
+  fi
+
+  # Update average total duration if we have duration
+  if [ -n "$duration_ms" ] && [ "$duration_ms" != "null" ] && [ "$duration_ms" -gt 0 ]; then
+    local current_avg=$(jq -r '.avg_duration_ms.total // 0' "$AGGREGATE_FILE")
+    if [ "$current_avg" == "null" ] || [ "$current_avg" == "0" ]; then
+      jq ".avg_duration_ms.total = $duration_ms" "$AGGREGATE_FILE" > "$tmp" && mv "$tmp" "$AGGREGATE_FILE"
+    else
+      # Simple running average
+      local new_avg=$(( (current_avg + duration_ms) / 2 ))
+      jq ".avg_duration_ms.total = $new_avg" "$AGGREGATE_FILE" > "$tmp" && mv "$tmp" "$AGGREGATE_FILE"
+    fi
+  fi
+}
+
+# Show workflow logs
+show_logs() {
+  local filter="$1"
+
+  log_phase "WORKFLOW LOGS"
+
+  if [ ! -d "$LOGS_DIR" ]; then
+    log_warn "No logs directory found"
+    return 0
+  fi
+
+  local log_files=$(ls -1t "$LOGS_DIR"/workflow-*.json 2>/dev/null || true)
+
+  if [ -z "$log_files" ]; then
+    log_warn "No workflow logs found"
+    return 0
+  fi
+
+  echo "ID                              Type      Outcome     Duration"
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+  echo "$log_files" | while read -r log_file; do
+    if [ -f "$log_file" ]; then
+      local id=$(jq -r '.workflow_id // "unknown"' "$log_file")
+      local type=$(jq -r '.type // "feature"' "$log_file")
+      local outcome=$(jq -r '.outcome // "unknown"' "$log_file")
+      local duration_ms=$(jq -r '.total_duration_ms // 0' "$log_file")
+
+      # Format duration
+      local duration_str="N/A"
+      if [ "$duration_ms" != "null" ] && [ "$duration_ms" -gt 0 ]; then
+        local minutes=$((duration_ms / 60000))
+        if [ "$minutes" -gt 60 ]; then
+          local hours=$((minutes / 60))
+          duration_str="${hours}h $((minutes % 60))m"
+        else
+          duration_str="${minutes}m"
+        fi
+      fi
+
+      printf "%-31s %-9s %-11s %s\n" "$id" "$type" "$outcome" "$duration_str"
+    fi
+  done
+}
+
+# Show specific workflow log
+show_log_detail() {
+  local log_id="$1"
+
+  if [ -z "$log_id" ]; then
+    log_error "Usage: ./orchestrate.sh logs <workflow-id>"
+    return 1
+  fi
+
+  # Find matching log file
+  local log_file=$(ls -1 "$LOGS_DIR"/workflow-*"$log_id"*.json 2>/dev/null | head -1)
+
+  if [ -z "$log_file" ] || [ ! -f "$log_file" ]; then
+    log_error "Log not found: $log_id"
+    echo "Use './orchestrate.sh logs' to list available logs"
+    return 1
+  fi
+
+  log_phase "WORKFLOW LOG: $log_id"
+
+  # Pretty print the log
+  jq '.' "$log_file"
+}
+
+# Show aggregate analytics
+show_analytics() {
+  init_aggregate
+
+  log_phase "WORKFLOW ANALYTICS"
+
+  local completed=$(jq -r '.workflows_completed // 0' "$AGGREGATE_FILE")
+  local aborted=$(jq -r '.workflows_aborted // 0' "$AGGREGATE_FILE")
+  local success_rate=$(jq -r '.success_rate.workflows // "N/A"' "$AGGREGATE_FILE")
+  local avg_duration=$(jq -r '.avg_duration_ms.total // 0' "$AGGREGATE_FILE")
+  local last_updated=$(jq -r '.last_updated // "never"' "$AGGREGATE_FILE")
+
+  echo "Workflows Completed:  $completed"
+  echo "Workflows Aborted:    $aborted"
+  echo ""
+
+  if [ "$success_rate" != "null" ] && [ "$success_rate" != "N/A" ]; then
+    local pct=$(echo "$success_rate * 100" | bc 2>/dev/null || echo "$success_rate")
+    echo "Success Rate:         ${pct}%"
+  else
+    echo "Success Rate:         N/A"
+  fi
+  echo ""
+
+  # Format average duration
+  if [ "$avg_duration" != "null" ] && [ "$avg_duration" -gt 0 ]; then
+    local minutes=$((avg_duration / 60000))
+    if [ "$minutes" -gt 60 ]; then
+      local hours=$((minutes / 60))
+      echo "Avg Duration:         ${hours}h $((minutes % 60))m"
+    else
+      echo "Avg Duration:         ${minutes}m"
+    fi
+  else
+    echo "Avg Duration:         N/A"
+  fi
+  echo ""
+  echo "Last Updated:         $last_updated"
+}
+
+# Show current workflow metrics
+show_metrics() {
+  local phase=$(get_state '.phase')
+
+  if [ "$phase" == "idle" ]; then
+    log_warn "No active workflow"
+    return 0
+  fi
+
+  log_phase "CURRENT WORKFLOW METRICS"
+
+  local feature=$(get_state '.feature // "unknown"')
+  local workflow_type=$(get_state '.type // "feature"')
+  local started_at=$(get_state '.metrics.started_at // "unknown"')
+
+  echo "Feature:      $feature"
+  echo "Type:         $workflow_type"
+  echo "Current Phase: $phase"
+  echo "Started At:   $started_at"
+  echo ""
+
+  # Calculate elapsed time
+  if [ "$started_at" != "unknown" ] && [ "$started_at" != "null" ]; then
+    local start_epoch=$(date -j -f "%Y-%m-%dT%H:%M:%SZ" "$started_at" "+%s" 2>/dev/null || date -d "$started_at" "+%s" 2>/dev/null || echo "0")
+    if [ "$start_epoch" -gt 0 ]; then
+      local now_epoch=$(date +%s)
+      local elapsed_sec=$((now_epoch - start_epoch))
+      local elapsed_min=$((elapsed_sec / 60))
+      if [ "$elapsed_min" -gt 60 ]; then
+        local hours=$((elapsed_min / 60))
+        echo "Elapsed:      ${hours}h $((elapsed_min % 60))m"
+      else
+        echo "Elapsed:      ${elapsed_min}m"
+      fi
+    fi
+  fi
+
+  echo ""
+  echo "Phase Status:"
+  echo "━━━━━━━━━━━━━━━━━━━━━━"
+
+  # Show status of each phase
+  for p in research architect planner execution reviewer integrator; do
+    local status=$(get_state ".phases.${p}.status // \"pending\"")
+    case "$status" in
+      complete)
+        echo -e "  $p: ${GREEN}complete${NC}"
+        ;;
+      in_progress)
+        echo -e "  $p: ${YELLOW}in_progress${NC}"
+        ;;
+      pending)
+        echo -e "  $p: pending"
+        ;;
+    esac
+  done
+}
+
 # Complete integration
 complete_integration() {
   log_phase "COMPLETING INTEGRATION"
@@ -2481,8 +2985,15 @@ complete_integration() {
   set_state '.phases.integrator.merged' 'true'
   set_state '.checkpoints.integration_complete' 'true'
   set_state '.phase' '"complete"'
-  add_history "Integration complete"
-  
+  set_state '.metrics.completed_at' "\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\""
+  add_history "Integration complete" "workflow_complete" "integrator" "completed"
+
+  # Save workflow log and update aggregate
+  save_workflow_log "$feature" "feature" "completed"
+
+  # Auto-append to memory
+  append_workflow_summary "$feature" "feature"
+
   log_success "Feature '$feature' completed!"
   echo ""
   echo "Don't forget:"
@@ -2755,6 +3266,40 @@ case "${1:-status}" in
   model)
     show_model_recommendation "$2" "$3"
     ;;
+  memory)
+    case "${2:-show}" in
+      show)
+        show_memory
+        ;;
+      add)
+        add_memory "$3" "$4"
+        ;;
+      clear)
+        clear_memory
+        ;;
+      *)
+        echo "Usage: ./orchestrate.sh memory <command>"
+        echo ""
+        echo "Commands:"
+        echo "  show                 Show all memory entries"
+        echo "  add <type> \"text\"    Add entry (types: pattern, decision, failure, success)"
+        echo "  clear                Clear all memory entries"
+        ;;
+    esac
+    ;;
+  logs)
+    if [ -z "$2" ]; then
+      show_logs
+    else
+      show_log_detail "$2"
+    fi
+    ;;
+  analytics)
+    show_analytics
+    ;;
+  metrics)
+    show_metrics
+    ;;
   *)
     echo "Usage: ./orchestrate.sh <command>"
     echo ""
@@ -2800,6 +3345,17 @@ case "${1:-status}" in
     echo "  abort                Soft stop - pause workflow (can resume later)"
     echo "  rollback             Hard reset - discard all changes, delete branches"
     echo "  reset                Reset to idle state"
+    echo ""
+    echo "Memory (cross-session learnings):"
+    echo "  memory show          Show all memory entries"
+    echo "  memory add <type> \"text\"    Add entry (pattern|decision|failure|success)"
+    echo "  memory clear         Clear all memory entries"
+    echo ""
+    echo "Logging & Analytics:"
+    echo "  logs                 List recent workflow logs"
+    echo "  logs <workflow-id>   Show specific workflow log"
+    echo "  analytics            Show aggregate statistics across all workflows"
+    echo "  metrics              Show current workflow metrics"
     echo ""
     echo "Utilities:"
     echo "  preflight            Run pre-flight checks (git, tools, auth)"

@@ -8,9 +8,13 @@ Analyze the feature request and produce a high-level technical architecture that
 
 ## Context
 
-- **Project:** whatsapp-mcp (WhatsApp bot with MCP server)
+- **Project:** Read from `.agents/config.json` → `project_name`
 - **Feature:** Read from `.agents/state.json` → `.feature` field
-- **Codebase:** `/Users/paramesvhara/Documents/Code/whatsapp-mcp`
+- **Codebase:** Current working directory
+
+## Prior Learnings
+
+Check `.agents/memory.md` for architectural patterns, decisions, and learnings from previous workflows.
 
 ## Your Tasks
 

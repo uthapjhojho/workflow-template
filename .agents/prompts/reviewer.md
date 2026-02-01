@@ -8,10 +8,14 @@ Review ALL changes made by both Claude and Codex, ensuring quality, consistency,
 
 ## Context
 
-- **Project:** whatsapp-mcp
+- **Project:** Read from `.agents/config.json` → `project_name`
 - **Feature:** Read from `.agents/state.json` → `.feature` field
 - **Main Branch:** `.branch.main` in state
 - **Codex Branch:** `.branch.codex` in state
+
+## Prior Learnings
+
+Check `.agents/memory.md` for review patterns and common issues from previous workflows.
 
 ## Your Tasks
 
@@ -69,7 +73,7 @@ Create `.agents/outputs/review.md`:
 
 ### [File 1]
 - **Change:** [Description]
-- **Quality:** ✅ Good / ⚠️ Needs attention / ❌ Issue
+- **Quality:** Good / Needs attention / Issue
 - **Notes:** [Any observations]
 
 ### [File 2]
@@ -79,7 +83,7 @@ Create `.agents/outputs/review.md`:
 
 ### [File 1]
 - **Change:** [Description]
-- **Quality:** ✅ Good / ⚠️ Needs attention / ❌ Issue
+- **Quality:** Good / Needs attention / Issue
 - **Notes:** [Any observations]
 
 ## Integration Analysis
@@ -87,24 +91,24 @@ Create `.agents/outputs/review.md`:
 ### Conflicts
 - [ ] No conflicts detected
 OR
-- ⚠️ [File] - [Description of conflict]
+- [File] - [Description of conflict]
 
 ### Duplicate Code
 - [ ] No duplicates detected
 OR
-- ⚠️ [Description]
+- [Description]
 
 ### Interface Alignment
 - [ ] All interfaces align correctly
 OR
-- ⚠️ [Issue description]
+- [Issue description]
 
 ## Acceptance Criteria Verification
 
 | Task | Criteria | Status |
 |------|----------|--------|
-| 1.1 | [Criterion] | ✅/❌ |
-| 2.1 | [Criterion] | ✅/❌ |
+| 1.1 | [Criterion] | Pass/Fail |
+| 2.1 | [Criterion] | Pass/Fail |
 ...
 
 ## Test Results
@@ -159,17 +163,17 @@ Date: [Date]
 1. Save review to `.agents/outputs/review.md`
 2. If APPROVED:
    ```
-   Review complete - APPROVED ✅
-   
+   Review complete - APPROVED
+
    Run: ./orchestrate.sh approve review
    ```
 3. If CHANGES REQUESTED:
    ```
-   Review complete - CHANGES REQUESTED ⚠️
-   
+   Review complete - CHANGES REQUESTED
+
    Issues to fix:
    1. [Issue] → [Agent to fix]
-   
+
    After fixes, re-run review.
    ```
 

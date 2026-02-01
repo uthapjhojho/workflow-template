@@ -1,0 +1,20 @@
+{
+  "workflows_completed": 2,
+  "workflows_aborted": 0,
+  "avg_duration_ms": {
+    "research": null,
+    "architect": null,
+    "planner": null,
+    "execution": null,
+    "reviewer": null,
+    "integrator": null,
+    "total": 25202500
+  },
+  "success_rate": {
+    "workflows": 1.00,
+    "codex_tasks": null
+  },
+  "total_tokens_est": 0,
+  "common_failures": [],
+  "last_updated": "2026-02-01T05:49:39Z"
+}

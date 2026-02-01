@@ -10,6 +10,7 @@ Verify the fix is complete, create the PR, update CHANGELOG, and finalize the bu
 
 ## Context
 
+- **Project:** Read from `.agents/config.json` → `project_name`
 - **Bug:** Read from `.agents/state.json` → `.bug` field
 - **Issue:** GitHub issue #`.bug.issue_number`
 - **Branch:** `.bug.branch`

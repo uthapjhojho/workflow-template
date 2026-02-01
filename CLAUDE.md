@@ -1,6 +1,6 @@
-# CLAUDE.md - Project Template
+# CLAUDE.md - Workflow Template
 
-> **Last updated:** YYYY-MM-DD | **Current Phase:** (phase name)
+> **Last updated:** 2026-02-01 | **Current Phase:** Template Project
 
 ---
 
@@ -39,14 +39,19 @@ When using the `.agents/` orchestration system:
 After building/modifying code, ALWAYS run these checks:
 
 ```bash
-# 1. Syntax check
+# 1. Syntax check (adjust for your language)
 python -m py_compile <file>.py
+# or: node --check <file>.js
+# or: go build ./...
 
-# 2. Import test
+# 2. Import/module test
 python -c "from module import ClassName"
+# or: node -e "require('./module')"
 
 # 3. Run existing tests
 pytest tests/ -v --tb=short
+# or: npm test
+# or: go test ./...
 ```
 
 ---
@@ -58,12 +63,21 @@ project-root/
 ├── .agents/                   # Orchestration system
 │   ├── orchestrate.sh         # Main workflow script
 │   ├── dispatch-codex.sh      # Parallel Codex dispatch
-│   ├── prompts/               # Phase prompts
+│   ├── config.json            # Project configuration
+│   ├── memory.md              # Cross-session learnings
+│   ├── prompts/               # Phase prompts (parameterized)
 │   ├── codex-tasks/           # Codex task files
-│   └── outputs/               # Phase outputs
+│   ├── outputs/               # Phase outputs
+│   └── logs/                  # Workflow execution logs
 ├── docs/
-│   ├── plans/                 # Execution plans
-│   └── AGENTS_WORKFLOW.md     # Workflow documentation
+│   ├── GETTING_STARTED.md     # 5-minute quickstart
+│   ├── COMMANDS.md            # Full command reference
+│   ├── STATE_SCHEMA.md        # State file documentation
+│   ├── ADOPTION.md            # Guide for adopting in existing projects
+│   ├── AGENTS_WORKFLOW.md     # Workflow documentation
+│   └── plans/                 # Execution plans
+│       ├── active/            # Current plans
+│       └── archive/           # Completed plans
 └── CLAUDE.md                  # This file
 ```
 
@@ -98,22 +112,64 @@ project-root/
 
 # Model recommendation
 ./orchestrate.sh model <phase> [simple|medium|complex]
+
+# Memory and analytics
+./orchestrate.sh memory show        # View learnings
+./orchestrate.sh metrics            # Current workflow metrics
+./orchestrate.sh analytics          # Cross-workflow stats
 ```
 
-### Running Locally
+### Bug-Fix Workflow
 
 ```bash
-# (Add your project-specific run commands here)
+# Start bug-fix (creates GitHub issue)
+./orchestrate.sh bug "<title>" [critical|major|minor]
+
+# Approve triage (root cause identified)
+./orchestrate.sh approve triage
+
+# Complete bug-fix (after PR created)
+./orchestrate.sh bug-complete
+```
+
+### Autonomous Mode (Overnight Work)
+
+```bash
+# Enable after research/triage approval
+./orchestrate.sh autonomous enable 8h
+
+# Check status
+./orchestrate.sh autonomous status
+
+# Disable when done
+./orchestrate.sh autonomous disable
 ```
 
 ---
 
-## Current Focus
+## Template Customization
 
-(Describe current development phase/feature)
+This is a template project for multi-agent orchestration. When adopting:
+
+1. **Run init command** to configure project settings:
+   ```bash
+   ./orchestrate.sh init
+   ```
+
+2. **Customize prompts** if needed - placeholders like `{{PROJECT_NAME}}` are auto-replaced
+
+3. **Add project-specific tests** to the Testing section above
+
+4. **Update this section** with your project context
+
+See `docs/ADOPTION.md` for detailed adoption instructions.
 
 ---
 
-## Important Notes
+## Documentation
 
-(Add project-specific notes, constraints, environment variables, etc.)
+- [Getting Started](docs/GETTING_STARTED.md) - 5-minute quickstart
+- [Commands Reference](docs/COMMANDS.md) - All 30+ commands
+- [State Schema](docs/STATE_SCHEMA.md) - state.json documentation
+- [Agents Workflow](docs/AGENTS_WORKFLOW.md) - Detailed workflow guide
+- [Troubleshooting](docs/TROUBLESHOOTING.md) - Common issues and solutions

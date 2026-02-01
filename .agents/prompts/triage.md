@@ -10,9 +10,13 @@ Reproduce the bug, identify root cause, assess severity, and prepare for fix imp
 
 ## Context
 
-- **Project:** Read from `CLAUDE.md`
+- **Project:** Read from `.agents/config.json` → `project_name`
 - **Bug:** Read from `.agents/state.json` → `.bug.title` field
 - **Issue:** GitHub issue #`.bug.issue_number`
+
+## Prior Learnings
+
+Check `.agents/memory.md` for patterns from previous bug fixes that may be relevant.
 
 ## Your Tasks
 

@@ -10,10 +10,15 @@ Create a focused fix plan with clear task assignments for Claude (core fix) and 
 
 ## Context
 
+- **Project:** Read from `.agents/config.json` → `project_name`
 - **Bug:** Read from `.agents/state.json` → `.bug` field
 - **Triage:** Read from `.agents/outputs/triage.md`
 - **Issue:** GitHub issue #`.bug.issue_number`
 - **Branch:** `fix/[issue_number]-[description]`
+
+## Prior Learnings
+
+Check `.agents/memory.md` for fix patterns from previous bug fixes.
 
 ## Your Tasks
 
@@ -91,7 +96,7 @@ Create `docs/plans/active/fix-[issue_number].md`:
 
 ---
 
-## ⏸️ HARD STOP - Core Fix Complete
+## HARD STOP - Core Fix Complete
 
 **Checklist:**
 - [ ] Fix implemented
@@ -119,7 +124,7 @@ Create `docs/plans/active/fix-[issue_number].md`:
 
 ---
 
-## ⏸️ HARD STOP - All Tasks Complete
+## HARD STOP - All Tasks Complete
 
 **Checklist:**
 - [ ] All Claude tasks complete: `./orchestrate.sh claude-complete`

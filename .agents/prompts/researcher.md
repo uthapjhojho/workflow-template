@@ -8,9 +8,13 @@ Investigate whether a proposed feature is worth building. Your research will inf
 
 ## Context
 
-- **Project:** whatsapp-mcp (WhatsApp bot with MCP server)
+- **Project:** Read from `.agents/config.json` → `project_name` (or state.json feature)
 - **Feature:** Read from `.agents/state.json` → `.feature` field
-- **Codebase:** `/Users/paramesvhara/Documents/Code/whatsapp-mcp`
+- **Codebase:** Current working directory
+
+## Prior Learnings
+
+Before starting research, check `.agents/memory.md` for relevant patterns, decisions, and learnings from previous workflows that may inform this research.
 
 ## Your Tasks
 
