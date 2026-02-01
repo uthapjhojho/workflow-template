@@ -56,6 +56,7 @@ RETRY_MODE=false
 PROVIDER_OVERRIDE=""
 FOREGROUND=false
 FORCE_TMUX=false
+COMPLEXITY_OVERRIDE=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -84,6 +85,13 @@ while [[ $# -gt 0 ]]; do
     --provider=*)
       PROVIDER_OVERRIDE="${1#*=}"
       ;;
+    --complexity)
+      shift
+      COMPLEXITY_OVERRIDE="$1"
+      ;;
+    --complexity=*)
+      COMPLEXITY_OVERRIDE="${1#*=}"
+      ;;
   esac
   shift
 done
@@ -97,6 +105,82 @@ get_provider_config() {
   local provider="$1"
   local key="$2"
   jq -r ".ai_provider.providers.${provider}.${key} // empty" "$CONFIG_FILE" 2>/dev/null
+}
+
+# Parse YAML frontmatter from task file
+# Returns task_type and complexity as "task_type:complexity" or empty
+parse_task_metadata() {
+  local task_file="$1"
+  local task_type=""
+  local complexity=""
+
+  # Check if file starts with ---
+  if head -1 "$task_file" | grep -q "^---"; then
+    # Extract frontmatter (between first and second ---)
+    local frontmatter
+    frontmatter=$(awk '/^---$/{if(p){exit}else{p=1;next}}p' "$task_file")
+
+    # Parse task_type
+    task_type=$(echo "$frontmatter" | grep "^task_type:" | sed 's/task_type: *//' | tr -d '[:space:]')
+
+    # Parse complexity
+    complexity=$(echo "$frontmatter" | grep "^complexity:" | sed 's/complexity: *//' | tr -d '[:space:]')
+  fi
+
+  # Return as "task_type:complexity" (either or both may be empty)
+  echo "${task_type}:${complexity}"
+}
+
+# Get provider for a specific task type and complexity
+# Supports both legacy (string) and three-tier (object) routing formats
+# Args: task_type, complexity (optional, defaults to medium)
+get_provider_for_task() {
+  local task_type="$1"
+  local complexity="${2:-medium}"
+
+  # If provider override is set, use it
+  if [ -n "$PROVIDER_OVERRIDE" ]; then
+    echo "$PROVIDER_OVERRIDE"
+    return
+  fi
+
+  # Get routing config for this task type
+  local routing
+  routing=$(jq -r ".ai_task_routing.${task_type} // empty" "$CONFIG_FILE" 2>/dev/null)
+
+  if [ -z "$routing" ] || [ "$routing" == "null" ]; then
+    # Task type not configured, use active provider
+    echo "$(get_config '.ai_provider.active')"
+    return
+  fi
+
+  # Check if routing is a string (legacy) or object (three-tier)
+  local routing_type
+  routing_type=$(jq -r ".ai_task_routing.${task_type} | type" "$CONFIG_FILE" 2>/dev/null)
+
+  if [ "$routing_type" == "string" ]; then
+    # Legacy format: string value is the provider
+    echo "$routing"
+  elif [ "$routing_type" == "object" ]; then
+    # Three-tier format: look up by complexity
+    local provider
+    provider=$(jq -r ".ai_task_routing.${task_type}.${complexity} // empty" "$CONFIG_FILE" 2>/dev/null)
+
+    if [ -z "$provider" ] || [ "$provider" == "null" ]; then
+      # Complexity not found, fallback to medium
+      provider=$(jq -r ".ai_task_routing.${task_type}.medium // empty" "$CONFIG_FILE" 2>/dev/null)
+    fi
+
+    if [ -z "$provider" ] || [ "$provider" == "null" ]; then
+      # Still not found, use active provider
+      echo "$(get_config '.ai_provider.active')"
+    else
+      echo "$provider"
+    fi
+  else
+    # Unknown format, use active provider
+    echo "$(get_config '.ai_provider.active')"
+  fi
 }
 
 # Determine active provider
@@ -422,48 +506,248 @@ apply_code_blocks() {
 call_cli_provider() {
   local task_file="$1"
   local task_name="$2"
-  
+
   # Run Codex CLI
   eval "$CLI_COMMAND" < "$task_file"
 }
 
+# Function to call Anthropic API provider (Claude models)
+# Args: task_file, task_name, provider_name
+call_anthropic_provider() {
+  local task_file="$1"
+  local task_name="$2"
+  local provider="$3"
+  local output_file="$OUTPUTS_DIR/${task_name}-response.md"
+
+  # Get provider-specific settings
+  local api_base
+  api_base=$(get_provider_config "$provider" "api_base")
+  local model
+  model=$(get_provider_config "$provider" "model")
+  local env_key
+  env_key=$(get_provider_config "$provider" "env_key")
+
+  # Get API key
+  local api_key=""
+  if command -v doppler &> /dev/null; then
+    api_key=$(doppler secrets get "$env_key" --project algo_ranger_bot --config prd --plain 2>/dev/null || true)
+  fi
+  if [ -z "$api_key" ]; then
+    api_key="${!env_key}"
+  fi
+
+  if [ -z "$api_key" ]; then
+    log_error "API key not set for $provider. Please set $env_key environment variable."
+    echo "ERROR: API key not set" > "$output_file"
+    return 1
+  fi
+
+  # Read task content
+  local task_content
+  task_content=$(cat "$task_file")
+
+  # Escape for JSON
+  local escaped_task
+  escaped_task=$(echo "$task_content" | jq -Rs .)
+
+  # Build request body (Anthropic format)
+  local request_body
+  request_body=$(cat <<EOF
+{
+  "model": "$model",
+  "max_tokens": $MAX_TOKENS,
+  "messages": [{"role": "user", "content": $escaped_task}]
+}
+EOF
+)
+
+  # Make API call
+  local response
+  response=$(curl -s -X POST "${api_base}/messages" \
+    -H "Content-Type: application/json" \
+    -H "x-api-key: $api_key" \
+    -H "anthropic-version: 2023-06-01" \
+    -d "$request_body")
+
+  # Check for errors
+  local error
+  error=$(echo "$response" | jq -r '.error.message // empty')
+  if [ -n "$error" ]; then
+    log_error "Anthropic API error for $task_name: $error"
+    echo "ERROR: $error" > "$output_file"
+    return 1
+  fi
+
+  # Extract response content
+  local content
+  content=$(echo "$response" | jq -r '.content[0].text // empty')
+
+  if [ -z "$content" ]; then
+    log_error "Empty response for $task_name"
+    echo "ERROR: Empty response" > "$output_file"
+    return 1
+  fi
+
+  # Save response
+  echo "$content" > "$output_file"
+  log_time "Response saved: $output_file"
+
+  # Parse and apply code blocks (extract files from response)
+  apply_code_blocks "$content" "$task_name"
+
+  return 0
+}
+
+# Dispatch a single task to the appropriate provider
+# Args: task_file, task_name, provider
+dispatch_single_task() {
+  local task_file="$1"
+  local task_name="$2"
+  local provider="$3"
+
+  # Get provider type
+  local provider_type
+  provider_type=$(get_provider_config "$provider" "type")
+
+  case "$provider_type" in
+    cli)
+      call_cli_provider "$task_file" "$task_name"
+      ;;
+    anthropic)
+      call_anthropic_provider "$task_file" "$task_name" "$provider"
+      ;;
+    api)
+      # OpenAI-compatible API
+      # Need to set global vars for call_api_provider
+      local saved_api_base="$API_BASE"
+      local saved_model="$MODEL"
+      local saved_env_key="$ENV_KEY"
+
+      API_BASE=$(get_provider_config "$provider" "api_base")
+      MODEL=$(get_provider_config "$provider" "model")
+      ENV_KEY=$(get_provider_config "$provider" "env_key")
+
+      # Get API key
+      if command -v doppler &> /dev/null; then
+        API_KEY=$(doppler secrets get "$ENV_KEY" --project algo_ranger_bot --config prd --plain 2>/dev/null || true)
+      fi
+      if [ -z "$API_KEY" ]; then
+        API_KEY="${!ENV_KEY}"
+      fi
+
+      call_api_provider "$task_file" "$task_name"
+      local result=$?
+
+      # Restore
+      API_BASE="$saved_api_base"
+      MODEL="$saved_model"
+      ENV_KEY="$saved_env_key"
+
+      return $result
+      ;;
+    *)
+      log_error "Unknown provider type: $provider_type"
+      return 1
+      ;;
+  esac
+}
+
 # Dry run mode
 if [ "$DRY_RUN" = true ]; then
-  log_info "Dry run mode - printing commands:"
-  log_info "Provider: $PROVIDER_NAME ($ACTIVE_PROVIDER)"
+  log_info "Dry run mode - per-task routing:"
+  if [ -n "$PROVIDER_OVERRIDE" ]; then
+    log_info "Provider override: $PROVIDER_OVERRIDE"
+  fi
+  if [ -n "$COMPLEXITY_OVERRIDE" ]; then
+    log_info "Complexity override: $COMPLEXITY_OVERRIDE"
+  fi
   echo ""
-  
+
   for task_file in $TASK_FILES; do
     task_name=$(basename "$task_file" .md)
-    echo "  # $task_name"
-    
-    if [ "$PROVIDER_TYPE" == "cli" ]; then
-      echo "  $CLI_COMMAND < $task_file &"
+
+    # Parse task metadata
+    metadata=$(parse_task_metadata "$task_file")
+    task_type="${metadata%%:*}"
+    task_complexity="${metadata##*:}"
+
+    # Apply overrides
+    if [ -n "$COMPLEXITY_OVERRIDE" ]; then
+      task_complexity="$COMPLEXITY_OVERRIDE"
+    fi
+
+    # Default complexity to medium if not specified
+    task_complexity="${task_complexity:-medium}"
+
+    # Get provider for this task
+    if [ -n "$task_type" ]; then
+      task_provider=$(get_provider_for_task "$task_type" "$task_complexity")
     else
-      echo "  curl -X POST \"${API_BASE}/chat/completions\" \\"
-      echo "    -H \"Authorization: Bearer \$${ENV_KEY}\" \\"
-      echo "    -d '{\"model\": \"$MODEL\", \"messages\": [...]}' &"
+      task_provider="${PROVIDER_OVERRIDE:-$ACTIVE_PROVIDER}"
+    fi
+
+    provider_name=$(get_provider_config "$task_provider" "name")
+    provider_type=$(get_provider_config "$task_provider" "type")
+    model=$(get_provider_config "$task_provider" "model")
+
+    echo "  # $task_name"
+    if [ -n "$task_type" ]; then
+      echo "    task_type: $task_type, complexity: $task_complexity"
+    fi
+    echo "    provider: $provider_name ($task_provider)"
+    echo "    model: $model"
+
+    if [ "$provider_type" == "cli" ]; then
+      cli_cmd=$(get_provider_config "$task_provider" "command")
+      echo "    command: $cli_cmd < $task_file &"
+    elif [ "$provider_type" == "anthropic" ]; then
+      api_base=$(get_provider_config "$task_provider" "api_base")
+      echo "    endpoint: ${api_base}/messages"
+    else
+      api_base=$(get_provider_config "$task_provider" "api_base")
+      echo "    endpoint: ${api_base}/chat/completions"
     fi
     echo ""
   done
   exit 0
 fi
 
-# Run all tasks in parallel
-log_time "Starting all tasks with $PROVIDER_NAME..."
+# Run all tasks in parallel with per-task routing
+log_time "Starting all tasks with per-task routing..."
 pids=()
 task_names=()
+task_providers=()
 
 for task_file in $TASK_FILES; do
   task_name=$(basename "$task_file" .md)
-  log_time "Starting: $task_name"
-  task_names+=("$task_name")
-  
-  if [ "$PROVIDER_TYPE" == "cli" ]; then
-    (call_cli_provider "$task_file" "$task_name") &
-  else
-    (call_api_provider "$task_file" "$task_name") &
+
+  # Parse task metadata
+  metadata=$(parse_task_metadata "$task_file")
+  task_type="${metadata%%:*}"
+  task_complexity="${metadata##*:}"
+
+  # Apply complexity override
+  if [ -n "$COMPLEXITY_OVERRIDE" ]; then
+    task_complexity="$COMPLEXITY_OVERRIDE"
   fi
+
+  # Default complexity to medium if not specified
+  task_complexity="${task_complexity:-medium}"
+
+  # Get provider for this task
+  if [ -n "$task_type" ]; then
+    task_provider=$(get_provider_for_task "$task_type" "$task_complexity")
+  else
+    task_provider="${PROVIDER_OVERRIDE:-$ACTIVE_PROVIDER}"
+  fi
+
+  provider_name=$(get_provider_config "$task_provider" "name")
+  log_time "Starting: $task_name -> $provider_name ($task_provider)"
+  task_names+=("$task_name")
+  task_providers+=("$task_provider")
+
+  # Dispatch task to appropriate provider
+  (dispatch_single_task "$task_file" "$task_name" "$task_provider") &
   pids+=($!)
 done
 

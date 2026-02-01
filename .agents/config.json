@@ -42,6 +42,27 @@
         "model": "claude-sonnet-4-5-20241022",
         "env_key": "ANTHROPIC_API_KEY"
       },
+      "haiku": {
+        "name": "Claude Haiku",
+        "type": "anthropic",
+        "api_base": "https://api.anthropic.com/v1",
+        "model": "claude-3-5-haiku-20241022",
+        "env_key": "ANTHROPIC_API_KEY"
+      },
+      "sonnet": {
+        "name": "Claude Sonnet",
+        "type": "anthropic",
+        "api_base": "https://api.anthropic.com/v1",
+        "model": "claude-sonnet-4-5-20241022",
+        "env_key": "ANTHROPIC_API_KEY"
+      },
+      "opus": {
+        "name": "Claude Opus",
+        "type": "anthropic",
+        "api_base": "https://api.anthropic.com/v1",
+        "model": "claude-opus-4-5-20251101",
+        "env_key": "ANTHROPIC_API_KEY"
+      },
       "codex": {
         "name": "OpenAI Codex",
         "type": "cli",
@@ -65,15 +86,51 @@
     }
   },
   "ai_task_routing": {
-    "_comment": "Maps task types to providers. Use 'glm' for structured text, 'claude' for reasoning tasks. Set to null to disable.",
-    "code_execution": "glm",
-    "pr_description": "glm",
-    "documentation": "glm",
-    "commit_message": "glm",
-    "changelog": "glm",
-    "test_generation": "claude",
-    "research_summary": "claude",
-    "error_explanation": "claude",
-    "code_review": "claude"
+    "_comment": "Maps task types to providers by complexity. Values can be string (legacy, treated as medium) or object with simple/medium/complex keys.",
+    "code_execution": {
+      "simple": "haiku",
+      "medium": "glm",
+      "complex": "sonnet"
+    },
+    "pr_description": {
+      "simple": "haiku",
+      "medium": "glm",
+      "complex": "glm"
+    },
+    "documentation": {
+      "simple": "glm",
+      "medium": "glm",
+      "complex": "sonnet"
+    },
+    "commit_message": {
+      "simple": "glm",
+      "medium": "glm",
+      "complex": "glm"
+    },
+    "changelog": {
+      "simple": "glm",
+      "medium": "glm",
+      "complex": "sonnet"
+    },
+    "test_generation": {
+      "simple": "glm",
+      "medium": "sonnet",
+      "complex": "opus"
+    },
+    "research_summary": {
+      "simple": "sonnet",
+      "medium": "sonnet",
+      "complex": "opus"
+    },
+    "error_explanation": {
+      "simple": "sonnet",
+      "medium": "sonnet",
+      "complex": "opus"
+    },
+    "code_review": {
+      "simple": "glm",
+      "medium": "sonnet",
+      "complex": "opus"
+    }
   }
 }

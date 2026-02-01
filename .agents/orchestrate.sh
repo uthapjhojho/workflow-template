@@ -1971,9 +1971,24 @@ start_feature() {
 # Dispatch Codex tasks
 dispatch_codex() {
   local auto_mode=false
-  if [[ "$1" == "--auto" ]]; then
-    auto_mode=true
-  fi
+  local complexity_flag=""
+
+  # Parse arguments
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --auto)
+        auto_mode=true
+        ;;
+      --complexity)
+        shift
+        complexity_flag="--complexity $1"
+        ;;
+      --complexity=*)
+        complexity_flag="--complexity ${1#*=}"
+        ;;
+    esac
+    shift
+  done
 
   log_phase "DISPATCHING CODEX TASKS"
 
@@ -2033,28 +2048,35 @@ dispatch_codex() {
 
     add_history "Auto-executed $pending_tasks Codex task(s) ($failed failed)"
   else
-    # Manual mode: print commands
-    for task_file in "$CODEX_TASKS_DIR"/task-*.md; do
-      local task_name=$(basename "$task_file" .md)
-      log_info "Dispatching: $task_name"
-
-      echo ""
-      echo "Run this command in a separate terminal:"
-      echo ""
-      echo "  cd $PROJECT_ROOT && codex exec --full-auto < $task_file"
-      echo ""
-    done
-
-    add_history "Dispatched $pending_tasks Codex task(s)"
-
-    log_success "Codex tasks dispatched!"
+    # Manual mode: use dispatch-ai.sh with per-task routing
+    log_info "Using AI dispatch with per-task routing..."
     echo ""
-    echo "After Codex completes:"
+    echo "Run the dispatcher:"
+    echo ""
+    if [ -n "$complexity_flag" ]; then
+      echo "  ./.agents/dispatch-ai.sh $complexity_flag"
+      echo "  # Or in background:"
+      echo "  ./.agents/dispatch-ai.sh --background $complexity_flag"
+    else
+      echo "  ./.agents/dispatch-ai.sh"
+      echo "  # Or in background:"
+      echo "  ./.agents/dispatch-ai.sh --background"
+    fi
+    echo ""
+    echo "Options:"
+    echo "  --complexity simple   Use simple-tier providers (cheaper)"
+    echo "  --complexity medium   Use medium-tier providers (default)"
+    echo "  --complexity complex  Use complex-tier providers (powerful)"
+    echo "  --dry-run             Show routing without executing"
+    echo ""
+
+    add_history "Dispatched $pending_tasks AI task(s)"
+
+    log_success "AI tasks ready to dispatch!"
+    echo ""
+    echo "After tasks complete:"
     echo "  1. Commit changes with './orchestrate.sh codex-commit'"
     echo "  2. Run './orchestrate.sh codex-complete'"
-    echo ""
-    echo "Or use --auto flag to run tasks automatically:"
-    echo "  ./orchestrate.sh codex-dispatch --auto"
   fi
 }
 
@@ -3234,7 +3256,7 @@ case "${1:-status}" in
     claude_codex_auto "$2"
     ;;
   codex-dispatch)
-    dispatch_codex "$2"
+    dispatch_codex "${@:2}"
     ;;
   codex-commit)
     codex_commit "$2"
@@ -3330,6 +3352,45 @@ case "${1:-status}" in
       jq ".ai_provider.active = \"$new_provider\"" "$CONFIG_FILE" > "$tmp" && mv "$tmp" "$CONFIG_FILE"
       log_success "Switched to $provider_name ($new_provider)"
     fi
+    ;;
+  ai-routing)
+    # Show AI task routing table
+    echo "=== AI Task Routing Table ==="
+    echo ""
+    echo "Three-tier routing: simple → medium → complex"
+    echo ""
+
+    # Get all task types
+    jq -r '.ai_task_routing | to_entries[] | select(.key != "_comment") | .key' "$CONFIG_FILE" | while read task_type; do
+      routing=$(jq -r ".ai_task_routing.\"$task_type\"" "$CONFIG_FILE")
+      routing_type=$(jq -r ".ai_task_routing.\"$task_type\" | type" "$CONFIG_FILE")
+
+      if [ "$routing_type" == "string" ]; then
+        # Legacy format
+        provider_name=$(jq -r ".ai_provider.providers.\"$routing\".name // \"$routing\"" "$CONFIG_FILE")
+        printf "  %-20s → %s (legacy)\n" "$task_type" "$provider_name"
+      elif [ "$routing_type" == "object" ]; then
+        # Three-tier format
+        simple=$(jq -r ".ai_task_routing.\"$task_type\".simple // \"-\"" "$CONFIG_FILE")
+        medium=$(jq -r ".ai_task_routing.\"$task_type\".medium // \"-\"" "$CONFIG_FILE")
+        complex=$(jq -r ".ai_task_routing.\"$task_type\".complex // \"-\"" "$CONFIG_FILE")
+
+        # Get provider names
+        simple_name=$(jq -r ".ai_provider.providers.\"$simple\".name // \"$simple\"" "$CONFIG_FILE")
+        medium_name=$(jq -r ".ai_provider.providers.\"$medium\".name // \"$medium\"" "$CONFIG_FILE")
+        complex_name=$(jq -r ".ai_provider.providers.\"$complex\".name // \"$complex\"" "$CONFIG_FILE")
+
+        printf "  %-20s\n" "$task_type"
+        printf "    simple:  %-15s medium: %-15s complex: %s\n" "$simple" "$medium" "$complex"
+      fi
+    done
+
+    echo ""
+    echo "Active default provider: $(jq -r '.ai_provider.active' "$CONFIG_FILE")"
+    echo ""
+    echo "Usage:"
+    echo "  ./.agents/ai-assist.sh <task_type> --complexity <level>"
+    echo "  ./.agents/dispatch-ai.sh --complexity <level>"
     ;;
   draft-pr)
     # Generate PR description using AI
@@ -3455,7 +3516,7 @@ case "${1:-status}" in
     echo "  claude-codex-auto --check   Check if complete, finalize if ready"
     echo ""
     echo "Codex manual control:"
-    echo "  codex-dispatch       Dispatch Codex tasks (add --auto for auto-execution)"
+    echo "  codex-dispatch [--complexity level]  Dispatch AI tasks (simple|medium|complex)"
     echo "  codex-status         Check running Codex tasks and git changes"
     echo "  codex-commit [msg]   Commit all Codex changes with attribution"
     echo "  codex-complete       Mark Codex execution complete"

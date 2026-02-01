@@ -1,3 +1,12 @@
+---
+# Optional YAML frontmatter for AI task routing
+# task_type: code_execution | pr_description | documentation | commit_message |
+#            changelog | test_generation | research_summary | error_explanation | code_review
+# complexity: simple | medium | complex
+task_type: code_execution
+complexity: medium
+---
+
 # Task X.X - [Task Name]
 
 ## Context

@@ -50,6 +50,7 @@ log_error() { echo -e "${RED}[ERROR]${NC} $1" >&2; }
 TASK_TYPE=""
 DRY_RUN=false
 PROVIDER_OVERRIDE=""
+COMPLEXITY=""
 OUTPUT_FILE=""
 CONTEXT_FILE=""
 EXTRA_ARGS=()
@@ -65,6 +66,13 @@ while [[ $# -gt 0 ]]; do
       ;;
     --provider=*)
       PROVIDER_OVERRIDE="${1#*=}"
+      ;;
+    --complexity)
+      shift
+      COMPLEXITY="$1"
+      ;;
+    --complexity=*)
+      COMPLEXITY="${1#*=}"
       ;;
     --output)
       shift
@@ -102,10 +110,11 @@ if [ -z "$TASK_TYPE" ]; then
   echo "            test_generation, research_summary, error_explanation, code_review"
   echo ""
   echo "Options:"
-  echo "  --dry-run          Print prompt without calling API"
-  echo "  --provider <name>  Override configured provider"
-  echo "  --output <file>    Write to file instead of stdout"
-  echo "  --context <file>   Include additional context"
+  echo "  --dry-run              Print prompt without calling API"
+  echo "  --provider <name>      Override configured provider"
+  echo "  --complexity <level>   Set complexity (simple|medium|complex)"
+  echo "  --output <file>        Write to file instead of stdout"
+  echo "  --context <file>       Include additional context"
   exit 1
 fi
 
@@ -120,11 +129,28 @@ get_provider_config() {
   jq -r ".ai_provider.providers.${provider}.${key} // empty" "$CONFIG_FILE" 2>/dev/null
 }
 
-# Get provider for this task type
+# Get provider for this task type with three-tier routing support
 if [ -n "$PROVIDER_OVERRIDE" ]; then
   PROVIDER="$PROVIDER_OVERRIDE"
 else
-  PROVIDER=$(jq -r ".ai_task_routing.${TASK_TYPE} // empty" "$CONFIG_FILE" 2>/dev/null)
+  # Check routing config type (string = legacy, object = three-tier)
+  ROUTING_TYPE=$(jq -r ".ai_task_routing.${TASK_TYPE} | type" "$CONFIG_FILE" 2>/dev/null)
+
+  if [ "$ROUTING_TYPE" == "string" ]; then
+    # Legacy format: direct provider name
+    PROVIDER=$(jq -r ".ai_task_routing.${TASK_TYPE} // empty" "$CONFIG_FILE" 2>/dev/null)
+  elif [ "$ROUTING_TYPE" == "object" ]; then
+    # Three-tier format: look up by complexity
+    COMPLEXITY="${COMPLEXITY:-medium}"
+    PROVIDER=$(jq -r ".ai_task_routing.${TASK_TYPE}.${COMPLEXITY} // empty" "$CONFIG_FILE" 2>/dev/null)
+
+    # Fallback to medium if complexity not found
+    if [ -z "$PROVIDER" ] || [ "$PROVIDER" == "null" ]; then
+      PROVIDER=$(jq -r ".ai_task_routing.${TASK_TYPE}.medium // empty" "$CONFIG_FILE" 2>/dev/null)
+    fi
+  else
+    PROVIDER=""
+  fi
 fi
 
 if [ -z "$PROVIDER" ] || [ "$PROVIDER" == "null" ]; then
@@ -147,7 +173,11 @@ if [ -z "$PROVIDER_NAME" ] || [ "$PROVIDER_NAME" == "null" ]; then
   exit 1
 fi
 
-log_info "Task: $TASK_TYPE -> Provider: $PROVIDER_NAME ($MODEL)"
+if [ -n "$COMPLEXITY" ]; then
+  log_info "Task: $TASK_TYPE ($COMPLEXITY) -> Provider: $PROVIDER_NAME ($MODEL)"
+else
+  log_info "Task: $TASK_TYPE -> Provider: $PROVIDER_NAME ($MODEL)"
+fi
 
 # Get API key
 API_KEY=""
