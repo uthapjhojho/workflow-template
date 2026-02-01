@@ -215,6 +215,44 @@ cat > "$FAILURES_FILE" << EOF
 }
 EOF
 
+# Sync results back to state.json (critical: fixes state tracking bug)
+STATE_FILE="$SCRIPT_DIR/state.json"
+STATE_LOCK_DIR="${STATE_FILE}.lockdir"
+
+if [ -f "$STATE_FILE" ]; then
+  log_time "Syncing results to state.json..."
+
+  # Portable locking using mkdir (works on Linux and macOS)
+  max_attempts=50
+  attempt=0
+  while ! mkdir "$STATE_LOCK_DIR" 2>/dev/null; do
+    ((attempt++))
+    if [ "$attempt" -ge "$max_attempts" ]; then
+      log_time "WARNING: Failed to acquire state lock after $max_attempts attempts"
+      break
+    fi
+    sleep 0.1
+  done
+
+  if [ "$attempt" -lt "$max_attempts" ]; then
+    tmp="${STATE_FILE}.tmp"
+    if jq \
+      --argjson completed "${#completed_tasks[@]}" \
+      --argjson failed "$failed" \
+      --argjson total "${#pids[@]}" \
+      '.phases.execution.codex.tasks_completed = $completed |
+       .phases.execution.codex.tasks_failed = $failed |
+       .phases.execution.codex.tasks_total = $total |
+       .phases.execution.codex.last_sync = "'"$(date -u +"%Y-%m-%dT%H:%M:%SZ")"'"' \
+      "$STATE_FILE" > "$tmp" 2>/dev/null && mv "$tmp" "$STATE_FILE"; then
+      log_time "State synced: $((${#completed_tasks[@]}))/${#pids[@]} completed, $failed failed"
+    else
+      log_time "WARNING: Failed to sync state"
+    fi
+    rmdir "$STATE_LOCK_DIR" 2>/dev/null || true
+  fi
+fi
+
 # Cleanup PID file
 rm -f "$PID_FILE"
 

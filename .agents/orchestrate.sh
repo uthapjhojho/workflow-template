@@ -679,20 +679,80 @@ get_state() {
   jq -r "$key" "$STATE_FILE"
 }
 
-# Update state
+# Lock directory for atomic state operations (mkdir is atomic on all Unix)
+STATE_LOCK_DIR="${STATE_FILE}.lockdir"
+
+# Portable file locking using mkdir (atomic on all Unix systems)
+# Works on both Linux and macOS
+acquire_state_lock() {
+  local max_attempts=50
+  local attempt=0
+
+  while ! mkdir "$STATE_LOCK_DIR" 2>/dev/null; do
+    ((attempt++))
+    if [ "$attempt" -ge "$max_attempts" ]; then
+      log_error "Failed to acquire state lock after $max_attempts attempts"
+      return 1
+    fi
+    # Check for stale lock (older than 30 seconds)
+    if [ -d "$STATE_LOCK_DIR" ]; then
+      local lock_age=$(( $(date +%s) - $(stat -f %m "$STATE_LOCK_DIR" 2>/dev/null || stat -c %Y "$STATE_LOCK_DIR" 2>/dev/null || echo 0) ))
+      if [ "$lock_age" -gt 30 ]; then
+        rmdir "$STATE_LOCK_DIR" 2>/dev/null || true
+      fi
+    fi
+    sleep 0.1
+  done
+  return 0
+}
+
+release_state_lock() {
+  rmdir "$STATE_LOCK_DIR" 2>/dev/null || true
+}
+
+# Update state with file locking to prevent race conditions
+# Uses mkdir-based locking (portable across Linux and macOS)
 set_state() {
   local key="$1"
   local value="$2"
-  local tmp=$(mktemp)
-  jq "$key = $value" "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
+  local tmp="${STATE_FILE}.tmp"
+
+  # Acquire lock
+  if ! acquire_state_lock; then
+    return 1
+  fi
+
+  # Perform update
+  if jq "$key = $value" "$STATE_FILE" > "$tmp" 2>/dev/null && mv "$tmp" "$STATE_FILE"; then
+    release_state_lock
+    return 0
+  else
+    release_state_lock
+    log_error "Failed to update state: $key"
+    return 1
+  fi
 }
 
-# Add history entry
+# Add history entry with file locking
 add_history() {
   local message="$1"
   local timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-  local tmp=$(mktemp)
-  jq ".history += [{\"timestamp\": \"$timestamp\", \"message\": \"$message\"}]" "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
+  local tmp="${STATE_FILE}.tmp"
+
+  # Acquire lock
+  if ! acquire_state_lock; then
+    return 1
+  fi
+
+  # Perform update
+  if jq ".history += [{\"timestamp\": \"$timestamp\", \"message\": \"$message\"}]" "$STATE_FILE" > "$tmp" 2>/dev/null && mv "$tmp" "$STATE_FILE"; then
+    release_state_lock
+    return 0
+  else
+    release_state_lock
+    log_error "Failed to add history entry"
+    return 1
+  fi
 }
 
 # ============================================================================
@@ -1951,20 +2011,22 @@ dispatch_codex() {
   fi
 }
 
-# Mark Codex complete
-codex_complete() {
-  log_info "Marking Codex execution as complete"
-
-  local total=$(get_state '.phases.execution.codex.tasks_total')
+# Helper: Try to advance from execution to next phase
+# Called by both codex_complete and claude_complete to avoid deadlock
+# Returns 0 if advanced, 1 if still waiting
+try_advance_from_execution() {
   local workflow_type=$(get_state '.type // "feature"')
-
-  set_state '.phases.execution.codex.status' '"complete"'
-  set_state '.phases.execution.codex.tasks_completed' "$total"
-  add_history "Codex execution completed"
-
-  # Check if Claude is also complete
   local claude_status=$(get_state '.phases.execution.claude.status')
-  if [ "$claude_status" == "complete" ]; then
+  local codex_status=$(get_state '.phases.execution.codex.status')
+  local codex_total=$(get_state '.phases.execution.codex.tasks_total')
+
+  # Check if both are complete (or no Codex tasks)
+  local codex_done=false
+  if [ "$codex_total" -eq 0 ] || [ "$codex_status" == "complete" ]; then
+    codex_done=true
+  fi
+
+  if [ "$claude_status" == "complete" ] && [ "$codex_done" == "true" ]; then
     set_state '.phases.execution.status' '"complete"'
     set_state '.checkpoints.execution_complete' 'true'
 
@@ -1977,9 +2039,32 @@ codex_complete() {
       update_model_hint "reviewer"
       log_success "All execution complete! Moving to REVIEWER phase."
     fi
-  else
-    log_info "Waiting for Claude execution to complete"
+    return 0
   fi
+
+  # Report what we're waiting for
+  if [ "$claude_status" != "complete" ]; then
+    log_info "Waiting for Claude execution (run './orchestrate.sh claude-complete' when done)"
+  fi
+  if [ "$codex_done" != "true" ]; then
+    log_info "Waiting for Codex execution (run './orchestrate.sh codex-complete' when done)"
+  fi
+  return 1
+}
+
+# Mark Codex complete
+codex_complete() {
+  log_info "Marking Codex execution as complete"
+
+  local total=$(get_state '.phases.execution.codex.tasks_total')
+
+  # CRITICAL: Update own status FIRST (before checking other's status)
+  set_state '.phases.execution.codex.status' '"complete"'
+  set_state '.phases.execution.codex.tasks_completed' "$total"
+  add_history "Codex execution completed"
+
+  # Try to advance to next phase (handles both complete case)
+  try_advance_from_execution
 }
 
 # Commit Codex changes (handles sandbox git restrictions)
@@ -2024,32 +2109,12 @@ EOF
 claude_complete() {
   log_info "Marking Claude execution as complete"
 
-  local workflow_type=$(get_state '.type // "feature"')
-
+  # CRITICAL: Update own status FIRST (before checking other's status)
   set_state '.phases.execution.claude.status' '"complete"'
   add_history "Claude execution completed"
 
-  # Check if Codex is also complete
-  local codex_status=$(get_state '.phases.execution.codex.status')
-  local codex_total=$(get_state '.phases.execution.codex.tasks_total')
-
-  if [ "$codex_total" -eq 0 ] || [ "$codex_status" == "complete" ]; then
-    set_state '.phases.execution.status' '"complete"'
-    set_state '.checkpoints.execution_complete' 'true'
-
-    if [ "$workflow_type" == "bugfix" ]; then
-      # Bug-fix: move to verify phase
-      start_verify_phase
-    else
-      # Feature: move to reviewer phase
-      set_state '.phase' '"reviewer"'
-      update_model_hint "reviewer"
-      log_success "All execution complete! Moving to REVIEWER phase."
-    fi
-  else
-    log_info "Waiting for Codex execution to complete"
-    log_info "You can dispatch Codex tasks now: ./orchestrate.sh codex-dispatch"
-  fi
+  # Try to advance to next phase (handles both complete case)
+  try_advance_from_execution
 }
 
 # Check Codex status (for monitoring background tasks)
@@ -2110,11 +2175,67 @@ codex_status() {
   fi
 }
 
+# Validate phase transition is allowed
+# Returns 0 if valid, 1 if invalid (and logs error)
+validate_phase_transition() {
+  local checkpoint="$1"
+  local current_phase=$(get_state '.phase')
+  local workflow_type=$(get_state '.type // "feature"')
+
+  case "$checkpoint" in
+    triage)
+      if [ "$current_phase" != "triage" ]; then
+        log_error "Cannot approve triage: current phase is '$current_phase' (expected 'triage')"
+        return 1
+      fi
+      ;;
+    research)
+      if [ "$current_phase" != "research" ]; then
+        log_error "Cannot approve research: current phase is '$current_phase' (expected 'research')"
+        return 1
+      fi
+      ;;
+    plan)
+      # For feature workflow, must be in 'planner' phase
+      # For bugfix workflow, must be in 'plan' phase
+      if [ "$workflow_type" == "bugfix" ]; then
+        if [ "$current_phase" != "plan" ]; then
+          log_error "Cannot approve plan: current phase is '$current_phase' (expected 'plan')"
+          return 1
+        fi
+      else
+        if [ "$current_phase" != "planner" ]; then
+          log_error "Cannot approve plan: current phase is '$current_phase' (expected 'planner')"
+          return 1
+        fi
+      fi
+      ;;
+    review)
+      if [ "$current_phase" != "reviewer" ]; then
+        log_error "Cannot approve review: current phase is '$current_phase' (expected 'reviewer')"
+        return 1
+      fi
+      ;;
+  esac
+  return 0
+}
+
 # Approve checkpoint
 approve_checkpoint() {
   local checkpoint="$1"
   local auto_mode=false
   local workflow_type=$(get_state '.type // "feature"')
+
+  # CRITICAL: Validate phase transition before proceeding
+  if ! validate_phase_transition "$checkpoint"; then
+    echo ""
+    echo "Current workflow state:"
+    echo "  Phase: $(get_state '.phase')"
+    echo "  Type:  $workflow_type"
+    echo ""
+    echo "Use './orchestrate.sh status' to see full workflow state."
+    exit 1
+  fi
 
   # Check if this should be auto-approved (autonomous mode)
   if check_autonomous_approval "$checkpoint"; then
