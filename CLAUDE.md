@@ -47,6 +47,54 @@ When using the `.agents/` orchestration system:
 
    This saves significant costs by using Opus only when necessary.
 
+### Auto-Delegation (CRITICAL for Token Savings)
+
+**Claude MUST automatically delegate routine tasks to AI providers to save tokens.**
+
+Use the `ai-delegate.sh` tool via Bash for mechanical/routine work:
+
+**AUTO-DELEGATE these tasks (call via Bash):**
+```bash
+# Simple/mechanical tasks → GLM/DeepSeek (cheap)
+./.agents/ai-delegate.sh "fix typo in README line 23"
+./.agents/ai-delegate.sh "update CHANGELOG with recent commits"
+./.agents/ai-delegate.sh "add JSDoc comments to UserService"
+./.agents/ai-delegate.sh --wait "generate tests for validateEmail function"
+```
+
+**When to auto-delegate:**
+- ✅ Typos, formatting, linting fixes
+- ✅ Boilerplate code (getters, setters, CRUD)
+- ✅ Test generation (unit tests, edge cases)
+- ✅ Documentation (JSDoc, docstrings, README updates)
+- ✅ Commit messages, CHANGELOG entries
+- ✅ Simple refactoring (rename, extract variable)
+
+**When Claude does it directly:**
+- ❌ Debugging (needs reasoning/investigation)
+- ❌ Architecture decisions (needs judgment)
+- ❌ Complex refactoring (needs deep context)
+- ❌ User questions/conversation
+- ❌ Multi-step planning
+- ❌ Code review with feedback
+
+**Usage pattern:**
+```bash
+# Background (default) - continue working while AI completes task
+./.agents/ai-delegate.sh "task description"
+
+# Wait mode - get result immediately
+./.agents/ai-delegate.sh --wait "task description"
+
+# Manual complexity override
+./.agents/ai-delegate.sh --complexity complex "refactor UserService"
+```
+
+**Transparency:** Always tell the user when delegating:
+"Delegating test generation to DeepSeek..." or "Routing to GLM for quick fix..."
+
+This is **MANDATORY** - auto-delegation saves 70-80% of Claude token usage.
+
 ### Workflow
 1. **Confirm** - Restate understanding before execution
 2. **Plan** - Write todo list before starting
